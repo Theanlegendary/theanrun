@@ -1,0 +1,46 @@
+name: Build Android Play Store AppBundle (.aab)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: ☕ Setup Java JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: 🐦 Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+
+      - name: 📦 Get Dependencies
+        run: flutter pub get
+
+      - name: 🚀 Build Release AppBundle (.aab) & APK (.apk)
+        run: |
+          flutter build appbundle --release
+          flutter build apk --release
+
+      - name: 📤 Upload AppBundle (.aab) Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: sanctuary-playstore-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+
+      - name: 📤 Upload Release APK (.apk) Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: sanctuary-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk

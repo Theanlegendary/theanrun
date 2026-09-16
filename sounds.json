@@ -1,0 +1,143 @@
+{
+  "version": "2.0.0",
+  "updated_at": "2026-07-30T12:00:00Z",
+  "total_sounds": 78,
+  "github_repository": "https://github.com/Theanlegendary/allinone",
+  "changelog": "v2.0.0 — replaced duplicate placeholder URLs with 78 unique CC0 sources from Moodist (remvze/moodist), Google Actions Sound Library, Internet Archive (SSE Library AMBIENCE). All sounds are now distinct, loop-friendly, and verified available.",
+  "categories": [
+    {
+      "id": "rain",
+      "name": "🌧️ Rain",
+      "count": 8,
+      "sounds": [
+        {"id": "soft_rain", "name": "Soft Rain", "desc": "Gentle Light Rainfall", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/light-rain.mp3"},
+        {"id": "thunderstorm", "name": "Thunderstorm", "desc": "Distant Rolling Thunder", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/thunder.mp3"},
+        {"id": "heavy_rain", "name": "Heavy Rain", "desc": "Continuous Pouring Storm", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/heavy-rain.mp3"},
+        {"id": "rain_window", "name": "Rain on Window", "desc": "Soft Drops on Glass", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/rain-on-window.mp3"},
+        {"id": "rain_roof", "name": "Rain on Car Roof", "desc": "Automobile Downpour", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/rain-on-car-roof.mp3"},
+        {"id": "rain_umbrella", "name": "Rain on Umbrella", "desc": "Rhythmic Pitter Patter", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/rain-on-umbrella.mp3"},
+        {"id": "rain_tent", "name": "Rain on Tent", "desc": "Wilderness Camping Rain", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/rain-on-tent.mp3"},
+        {"id": "rain_leaves", "name": "Rain on Leaves", "desc": "Forest Canopy Drizzle", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/rain/rain-on-leaves.mp3"}
+      ]
+    },
+    {
+      "id": "nature",
+      "name": "🌲 Nature",
+      "count": 15,
+      "sounds": [
+        {"id": "ocean_waves", "name": "Ocean Waves", "desc": "Rolling Pacific Tide", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/waves.mp3"},
+        {"id": "mountain_stream", "name": "Mountain Stream", "desc": "Flowing Crystal Creek", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/river.mp3"},
+        {"id": "forest_birds", "name": "Forest Birds", "desc": "Morning Canopy Chirp", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/birds.mp3"},
+        {"id": "campfire", "name": "Campfire", "desc": "Warm Crackling Wood Logs", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/campfire.mp3"},
+        {"id": "wind_trees", "name": "Wind in Trees", "desc": "Calm Forest Breeze", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/wind-in-trees.mp3"},
+        {"id": "wind_howl", "name": "Howling Wind", "desc": "High Mountain Gale", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/howling-wind.mp3"},
+        {"id": "crickets", "name": "Crickets", "desc": "Night Meadow Symphony", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/crickets.mp3"},
+        {"id": "waterfall", "name": "Waterfall", "desc": "Majestic Cascade Spray", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/waterfall.mp3"},
+        {"id": "frogs", "name": "Frogs", "desc": "Serene Marshland Night", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/frog.mp3"},
+        {"id": "jungle", "name": "Jungle Day", "desc": "Lush Tropical Canopy", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/jungle.mp3"},
+        {"id": "water_droplets", "name": "Water Droplets", "desc": "Dripping Cave Pools", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/droplets.mp3"},
+        {"id": "snow_walk", "name": "Walking in Snow", "desc": "Crushed Powder Steps", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/walk-in-snow.mp3"},
+        {"id": "gravel_walk", "name": "Walking on Gravel", "desc": "Crunchy Path Footsteps", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/walk-on-gravel.mp3"},
+        {"id": "leaves_walk", "name": "Walking on Leaves", "desc": "Autumn Crunch Trail", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/nature/walk-on-leaves.mp3"},
+        {"id": "owl", "name": "Owl Hooting", "desc": "Midnight Forest Call", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/owl.mp3"}
+      ]
+    },
+    {
+      "id": "places",
+      "name": "☕ Places",
+      "count": 10,
+      "sounds": [
+        {"id": "coffee_shop", "name": "Coffee Shop", "desc": "Gentle Ambient Chatter", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/cafe.mp3"},
+        {"id": "library", "name": "Library", "desc": "Silent Study Sanctuary", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/library.mp3"},
+        {"id": "office_ambience", "name": "Office Ambience", "desc": "Low Productivity Hum", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/office.mp3"},
+        {"id": "church", "name": "Church Interior", "desc": "Distant Resonant Echoes", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/church.mp3"},
+        {"id": "temple", "name": "Temple", "desc": "Zen Monastery Calm", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/temple.mp3"},
+        {"id": "restaurant", "name": "Restaurant", "desc": "Lively Dining Room", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/restaurant.mp3"},
+        {"id": "crowded_bar", "name": "Crowded Bar", "desc": "Bustling Evening Pub", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/crowded-bar.mp3"},
+        {"id": "night_village", "name": "Night Village", "desc": "Quiet Countryside Hamlet", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/night-village.mp3"},
+        {"id": "supermarket", "name": "Supermarket", "desc": "Soft Shopping Mall", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/supermarket.mp3"},
+        {"id": "airport", "name": "Airport", "desc": "Departure Lounge Hum", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/places/airport.mp3"}
+      ]
+    },
+    {
+      "id": "transport",
+      "name": "🚆 Transport",
+      "count": 8,
+      "sounds": [
+        {"id": "train", "name": "Train Ride", "desc": "Rhythmic Iron Rail Clicker", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/transport/train.mp3"},
+        {"id": "inside_train", "name": "Inside a Train", "desc": "Cabin Motion Hum", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/transport/inside-a-train.mp3"},
+        {"id": "airplane_cabin", "name": "Airplane Cabin", "desc": "Soothing White Noise Cruise", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/transport/airplane.mp3"},
+        {"id": "submarine", "name": "Submarine", "desc": "Deep Hull Pressure", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/transport/submarine.mp3"},
+        {"id": "rowing_boat", "name": "Rowing Boat", "desc": "Oars Splashing Lake", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/transport/rowing-boat.mp3"},
+        {"id": "sailing_ship", "name": "Sailing Ship", "desc": "Rigging Breeze & Swell", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/transport/sailboat.mp3"},
+        {"id": "highway_traffic", "name": "Highway Traffic", "desc": "Distant Asphalt Roll", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/urban/highway.mp3"},
+        {"id": "busy_street", "name": "Busy Street", "desc": "Midtown Vehicle Flow", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/urban/busy-street.mp3"}
+      ]
+    },
+    {
+      "id": "things",
+      "name": "⚙️ Things",
+      "count": 10,
+      "sounds": [
+        {"id": "clock_ticking", "name": "Clock Ticking", "desc": "Steady Rhythmic Pendulum", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/clock.mp3"},
+        {"id": "ceiling_fan", "name": "Ceiling Fan", "desc": "Cooling Air Circulation", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/ceiling-fan.mp3"},
+        {"id": "keyboard_typing", "name": "Keyboard Typing", "desc": "Soft Mechanical Keys", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/keyboard.mp3"},
+        {"id": "typewriter", "name": "Typewriter", "desc": "Vintage Click Clack", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/typewriter.mp3"},
+        {"id": "washing_machine", "name": "Washing Machine", "desc": "Gentle Laundry Rinsing", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/washing-machine.mp3"},
+        {"id": "dryer", "name": "Clothes Dryer", "desc": "Tumbling Warm Tumble", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/dryer.mp3"},
+        {"id": "vinyl_crackle", "name": "Vinyl Crackle", "desc": "Warm Analog Nostalgia", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/vinyl-effect.mp3"},
+        {"id": "boiling_kettle", "name": "Boiling Water", "desc": "Cozy Teatime Whistle", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/boiling-water.mp3"},
+        {"id": "wind_chimes", "name": "Wind Chimes", "desc": "Pentatonic Garden Tones", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/wind-chimes.mp3"},
+        {"id": "windshield_wipers", "name": "Windshield Wipers", "desc": "Rhythmic Sweep Beat", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/windshield-wipers.mp3"}
+      ]
+    },
+    {
+      "id": "noise",
+      "name": "🔊 Noise",
+      "count": 5,
+      "sounds": [
+        {"id": "white_noise", "name": "White Noise", "desc": "Full Spectrum Flat Noise", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/noise/white-noise.wav"},
+        {"id": "pink_noise", "name": "Pink Noise", "desc": "Balanced Waterfall Spectrum", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/noise/pink-noise.wav"},
+        {"id": "brown_noise", "name": "Brown Noise", "desc": "Deep Low Frequency Rumble", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/noise/brown-noise.wav"},
+        {"id": "wind_steady", "name": "Steady Wind", "desc": "Constant Outdoor Breeze", "url": "https://actions.google.com/sounds/v1/weather/wind.ogg"},
+        {"id": "desert_howl", "name": "Desert Howling Wind", "desc": "Solitary Dune Sweep", "url": "https://actions.google.com/sounds/v1/weather/desert_howling_wind.ogg"}
+      ]
+    },
+    {
+      "id": "solfeggio",
+      "name": "🔮 Solfeggio & Binaural",
+      "count": 10,
+      "sounds": [
+        {"id": "singing_bowl", "name": "Singing Bowl", "desc": "Tibetan Resonance Tone", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/singing-bowl.mp3"},
+        {"id": "binaural_delta", "name": "Delta Deep Sleep", "desc": "0.5–4 Hz Restorative", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/binaural/binaural-delta.wav"},
+        {"id": "binaural_theta", "name": "Theta Meditation", "desc": "4–8 Hz Deep Calm", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/binaural/binaural-theta.wav"},
+        {"id": "binaural_alpha", "name": "Alpha Focus Flow", "desc": "8–14 Hz Relaxed Awareness", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/binaural/binaural-alpha.wav"},
+        {"id": "binaural_beta", "name": "Beta Energy", "desc": "14–30 Hz Active Mind", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/binaural/binaural-beta.wav"},
+        {"id": "binaural_gamma", "name": "Gamma Insight", "desc": "30+ Hz Cognitive Peak", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/binaural/binaural-gamma.wav"},
+        {"id": "tuning_radio", "name": "Tuning Radio", "desc": "Static Meditation Static", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/tuning-radio.mp3"},
+        {"id": "morse_code", "name": "Morse Code", "desc": "Rhythmic Beep Pattern", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/morse-code.mp3"},
+        {"id": "paper_rustle", "name": "Paper Rustling", "desc": "Gentle Page Turn Calm", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/paper.mp3"},
+        {"id": "bubbles", "name": "Bubbles", "desc": "Soft Underwater Pop", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/things/bubbles.mp3"}
+      ]
+    },
+    {
+      "id": "animals",
+      "name": "🐾 Animals",
+      "count": 12,
+      "sounds": [
+        {"id": "cat_purring", "name": "Cat Purring", "desc": "Cozy Companion Hum", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/cat-purring.mp3"},
+        {"id": "seagulls", "name": "Seagulls", "desc": "Coastal Bird Calls", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/seagulls.mp3"},
+        {"id": "whale_song", "name": "Whale Song", "desc": "Deep Ocean Vocalization", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/whale.mp3"},
+        {"id": "wolf_howl", "name": "Wolf Howling", "desc": "Distant Wilderness Call", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/wolf.mp3"},
+        {"id": "woodpecker", "name": "Woodpecker", "desc": "Forest Tree Tap", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/woodpecker.mp3"},
+        {"id": "crows", "name": "Crows", "desc": "Mysterious Corvid Caws", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/crows.mp3"},
+        {"id": "horse_gallop", "name": "Horse Galloping", "desc": "Hoofbeat Rhythm", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/horse-gallop.mp3"},
+        {"id": "sheep", "name": "Sheep Bleating", "desc": "Pastoral Field Calm", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/sheep.mp3"},
+        {"id": "chickens", "name": "Chickens", "desc": "Farmyard Morning Cluck", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/chickens.mp3"},
+        {"id": "cows", "name": "Cows Mooing", "desc": "Rural Pasture Lowing", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/cows.mp3"},
+        {"id": "dog_barking", "name": "Dog Barking", "desc": "Distant Neighborhood Bark", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/dog-barking.mp3"},
+        {"id": "beehive", "name": "Beehive Hum", "desc": "Summer Garden Buzz", "url": "https://raw.githubusercontent.com/remvze/moodist/main/public/sounds/animals/beehive.mp3"}
+      ]
+    }
+  ]
+}

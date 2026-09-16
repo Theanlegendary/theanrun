@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config for Sanctuary: Relax & Mindfulness
+  Allows HTTPS traffic to CDN audio stream providers.
+  All production audio uses HTTPS — no cleartext traffic needed.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+    <!-- Allow specific CDN domains used for audio streaming -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">raw.githubusercontent.com</domain>
+        <domain includeSubdomains="true">images.unsplash.com</domain>
+    </domain-config>
+</network-security-config>

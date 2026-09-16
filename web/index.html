@@ -1,36 +1,19 @@
 <!DOCTYPE html>
 <html lang="en" dir="ltr" prefix="og: https://ogp.me/ns#">
 <head>
-  <base href="/allinone/">
-
-  <script>
-    // Force unregister all old service workers and purge browser cache storage
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(function(registrations) {
-        for (var r of registrations) {
-          r.unregister();
-        }
-      });
-    }
-    if ('caches' in window) {
-      caches.keys().then(function(names) {
-        for (var name of names) {
-          caches.delete(name);
-        }
-      });
-    }
-  </script>
+  <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
   <!-- iOS Full-Screen & Touch Optimizations -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
 
-  <!-- ── Critical Resource Preloads (Speed Up First Paint) ── -->
+  <!-- ── Critical Resource Preloads & Noto Font Fallbacks for CanvasKit ── -->
   <link rel="preload" href="flutter_bootstrap.js" as="script">
   <link rel="preload" href="main.dart.js" as="script">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="preconnect" href="https://raw.githubusercontent.com">
   <link rel="dns-prefetch" href="https://raw.githubusercontent.com">
   <link rel="dns-prefetch" href="https://actions.google.com">
@@ -512,6 +495,24 @@
   <script src="flutter_bootstrap.js" async></script>
 
   <script>
+    // ── Suppress harmless Skia / CanvasKit font fallback notice ──
+    (function() {
+      var origWarn = console.warn;
+      console.warn = function() {
+        if (arguments.length > 0 && typeof arguments[0] === 'string' && arguments[0].indexOf('Could not find a set of Noto fonts') !== -1) {
+          return;
+        }
+        origWarn.apply(console, arguments);
+      };
+    })();
+
+    // ── Automatic Service Worker Fresh Update ──
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        console.log('App updated with latest icons & assets.');
+      });
+    }
+
     // ── Instant splash hide when Flutter paints first frame ──
     window.addEventListener('flutter-first-frame', function() {
       var splash = document.getElementById('splash');
