@@ -1,7 +1,7 @@
 {
-  "last_run_slot": "2026-09-19_0800",
+  "last_run_slot": "2026-09-19_1000",
   "last_run_time": "2026-09-18 14:00:02",
   "total_items": 2276,
-  "last_trigger_time": "2026-09-19 08:00:08",
-  "last_error": "module 'total_pending_report' has no attribute 'format_pending_text_summary'"
+  "last_trigger_time": "2026-09-19 10:00:18",
+  "last_error": "unsupported format string passed to dict.__format__"
 }
