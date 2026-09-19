@@ -261,6 +261,76 @@ def track_report_dir(tmpdir: str):
         log.warning(f"track_report_dir failed: {e}")
 
 
+def _make_run_cache(name: str) -> str:
+    """Return an isolated run-cache directory inside project cache/<name>/run_<ts>_<rand>.
+    Also cleans up older run directories inside cache/<name>/ that are older than 1 hour.
+    This prevents wiping directories that are actively being forwarded while avoiding
+    infinite disk accumulation.
+    """
+    import shutil, uuid, time
+    base_dir = os.path.join(HERE, "cache", name)
+    try:
+        os.makedirs(base_dir, exist_ok=True)
+        # Clean up runs older than 1 hour
+        cutoff = time.time() - 3600
+        for entry in os.scandir(base_dir):
+            if entry.is_dir() and entry.name.startswith("run_"):
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        shutil.rmtree(entry.path, ignore_errors=True)
+                except Exception:
+                    pass
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        run_dir = os.path.join(base_dir, run_id)
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+    except Exception as e:
+        log.warning(f"_make_run_cache({name}) failed: {e}; falling back to mkdtemp")
+        return tempfile.mkdtemp(prefix=name + "_")
+
+
+def _cleanup_old_temp_bot_dirs():
+    """Delete accumulated %TEMP%/push_*, total_*, penalty_* etc. dirs on startup.
+    Keeps dirs younger than 1 hour so any currently-running session isn't affected.
+    """
+    import shutil
+    prefixes = (
+        "push_", "pending_", "total_", "penalty_", "speed_", "tomorrow_",
+        "find_", "check_", "export_po_", "report_", "daily_report_",
+        "delayed_", "vs_", "mega_", "dvc_",
+    )
+    tmp = tempfile.gettempdir()
+    cutoff = datetime.now().timestamp() - 3600  # older than 1 hour
+    removed = 0
+    freed_bytes = 0
+    for entry in os.scandir(tmp):
+        if not entry.is_dir():
+            continue
+        if not any(entry.name.startswith(p) for p in prefixes):
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            try:
+                size = sum(
+                    f.stat().st_size
+                    for f in os.scandir(entry.path)
+                    if f.is_file()
+                )
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += 1
+                freed_bytes += size
+            except Exception as e:
+                log.debug(f"Cleanup {entry.path}: {e}")
+    if removed:
+        log.info(
+            f"Startup cleanup: removed {removed} old bot temp dirs, "
+            f"freed ~{freed_bytes // (1024*1024)} MB from {tmp}"
+        )
+
+
 from functools import wraps
 
 class PrivateMessageRequired(Exception):
@@ -436,8 +506,12 @@ async def safe_api_call(func, *args, **kwargs):
             log.warning(f"Flood control exceeded. Waiting for {wait_time} seconds before retrying (attempt {attempt + 1})...")
             await asyncio.sleep(wait_time + 1)
         except NetworkError as e:
-            if "chat not found" in str(e).lower():
+            err_str = str(e).lower()
+            if "chat not found" in err_str:
                 log.warning(f"Chat not found: {e}. Skipping immediately (no retry).")
+                raise e
+            if "photo_invalid_dimensions" in err_str:
+                log.warning(f"Photo invalid dimensions: {e}. Skipping retries immediately.")
                 raise e
             log.warning(f"Network error: {e}. Retrying in 3 seconds (attempt {attempt + 1})...")
             await asyncio.sleep(3)
@@ -629,17 +703,55 @@ async def edit_or_send_requester_text(
     return await send_requester_text(update, context, text, parse_mode=parse_mode)
 
 
-async def send_requester_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, photo, caption=None):
+_PRIMARY_TOKEN = None
+_thread_local = threading.local()
+
+def get_group_sender_bot(context: ContextTypes.DEFAULT_TYPE = None):
+    """
+    Returns a Bot instance configured with the primary bot token (@GrabberBill_Bot)
+    for dispatching messages/media to Telegram groups.
+    Ensures worker bots (@MFETMR_bot) can generate data and dispatch group reports
+    via @GrabberBill_Bot safely without cross-loop or permission errors.
+    """
+    global _PRIMARY_TOKEN
+    if not _PRIMARY_TOKEN:
+        try:
+            cfg = load_config()
+            _PRIMARY_TOKEN = cfg.get("telegram", {}).get("bot_token")
+        except Exception:
+            pass
+
+    if context and context.bot and _PRIMARY_TOKEN and context.bot.token == _PRIMARY_TOKEN:
+        return context.bot
+
+    if not hasattr(_thread_local, "primary_bot") or _thread_local.primary_bot is None:
+        if _PRIMARY_TOKEN:
+            from telegram import Bot
+            _thread_local.primary_bot = Bot(token=_PRIMARY_TOKEN)
+        elif context and context.bot:
+            return context.bot
+    return _thread_local.primary_bot
+
+
+async def send_requester_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, photo, caption=None, parse_mode=None, **kwargs):
     chat_id = requester_chat_id(update)
     if chat_id is None:
         log.warning("Cannot send requester photo without a chat id.")
         return False
 
     try:
-        await safe_api_call(context.bot.send_photo, chat_id=chat_id, photo=photo, caption=caption)
+        await safe_api_call(context.bot.send_photo, chat_id=chat_id, photo=photo, caption=caption, parse_mode=parse_mode, **kwargs)
         return True
     except Exception as e:
         log.warning("Could not send requester photo to %s: %s", chat_id, e)
+        try:
+            if hasattr(photo, "seek"):
+                photo.seek(0)
+            doc_name = getattr(photo, "name", "report.png") or "report.png"
+            await safe_api_call(context.bot.send_document, chat_id=chat_id, document=photo, filename=doc_name, caption=caption, parse_mode=parse_mode, **kwargs)
+            return True
+        except Exception as e_doc:
+            log.warning("Fallback document to requester %s failed: %s", chat_id, e_doc)
         if is_group_chat(update) and update.effective_chat:
             try:
                 if hasattr(photo, "seek"):
@@ -649,6 +761,8 @@ async def send_requester_photo(update: Update, context: ContextTypes.DEFAULT_TYP
                     chat_id=update.effective_chat.id, 
                     photo=photo,
                     caption=caption,
+                    parse_mode=parse_mode,
+                    **kwargs
                 )
                 return True
             except Exception as e2:
@@ -724,137 +838,206 @@ async def forward_result_to_groups(context: ContextTypes.DEFAULT_TYPE, payload):
     result = payload["result"]
     forward_groups = payload["forward_groups"]
     forward_mapping = payload["forward_mapping"]
-    sent_groups = 0
     import io
 
-    # Cache converted images so we don't re-render them for multiple groups
+    # ── Pre-render all images ONCE (shared across all groups) ────────────────
     image_cache = {}
-
-    for group_id_str in forward_groups:
-        try:
-            group_id = int(group_id_str)
-        except ValueError:
-            group_id = group_id_str  # fallback if it's a string like "@channel"
-
-        allowed_handles = forward_mapping.get(group_id_str, ["*"])
-        wants_all = "*" in allowed_handles
-        sent_any = False
-        skip_group = False
-
-        for hr in result["handle_results"]:
-            if skip_group:
-                break
-            handle = hr["handle"]
-            if not wants_all and handle not in allowed_handles:
-                continue
-
-            for hf in hr["handle_files"]:
+    for hr in result["handle_results"]:
+        for hf in hr.get("handle_files", []):
+            fpath = hf["path"]
+            if fpath not in image_cache and os.path.exists(fpath):
                 try:
-                    fpath = hf["path"]
-                    if fpath not in image_cache:
-                        buf = excel_to_image.excel_to_image(fpath)
-                        image_cache[fpath] = buf.getvalue()
-                    img_buf = io.BytesIO(image_cache[fpath])
-                    img_buf.name = f"{handle}.png"
-                    await safe_api_call(context.bot.send_photo, chat_id=group_id, photo=img_buf)
-                    sent_any = True
-                    await asyncio.sleep(0.2)
-                except Forbidden as e:
-                    log.warning(f"Group {group_id} forbidden ({e}), skipping remaining messages for this group.")
-                    skip_group = True
-                    break
+                    buf = excel_to_image.excel_to_image(fpath)
+                    image_cache[fpath] = buf.getvalue()
                 except Exception as e:
-                    log.error(f"Image to group {group_id}: {e}")
+                    log.warning(f"Pre-render failed {fpath}: {e}")
+                    image_cache[fpath] = None  # mark failed so we skip per-group
 
-            if skip_group:
-                break
-
-            # Send Excel file for handle (combined branch excel or section files)
-            excel_sent = False
-            combined_path = hr.get("handle_excel_path")
-            if combined_path and os.path.exists(combined_path):
+    # ── Pre-cache all Excel files in memory (shared across all groups) ─────────
+    excel_cache = {}
+    for hr in result["handle_results"]:
+        combined_path = hr.get("handle_excel_path")
+        if combined_path and combined_path not in excel_cache and os.path.exists(combined_path):
+            try:
+                with open(combined_path, "rb") as ef:
+                    excel_cache[combined_path] = ef.read()
+            except Exception as e:
+                log.warning(f"Pre-cache Excel failed {combined_path}: {e}")
+        for hf in hr.get("handle_files", []):
+            fpath = hf.get("path")
+            if fpath and fpath not in excel_cache and os.path.exists(fpath):
                 try:
-                    with open(combined_path, "rb") as ef:
+                    with open(fpath, "rb") as ef:
+                        excel_cache[fpath] = ef.read()
+                except Exception as e:
+                    log.warning(f"Pre-cache Excel failed {fpath}: {e}")
+
+    final_xlsx = result.get("final_xlsx")
+    if final_xlsx and final_xlsx not in excel_cache and os.path.exists(final_xlsx):
+        try:
+            with open(final_xlsx, "rb") as ef:
+                excel_cache[final_xlsx] = ef.read()
+        except Exception as e:
+            log.warning(f"Pre-cache final Excel failed {final_xlsx}: {e}")
+
+    # ── Send to one group (sequential within each group) ─────────────────────
+    sender_bot = get_group_sender_bot(context)
+
+    async def _send_to_group(group_id_str: str, sem: asyncio.Semaphore) -> bool:
+        """Returns True if at least one message was sent to this group."""
+        async with sem:
+            try:
+                group_id = int(group_id_str)
+            except ValueError:
+                group_id = group_id_str
+
+            allowed_handles = forward_mapping.get(group_id_str, [])
+            wants_all = "*" in allowed_handles
+            sent_any = False
+
+            for hr in result["handle_results"]:
+                handle = hr["handle"]
+                if not wants_all and handle not in allowed_handles:
+                    continue
+
+                # Send images
+                for hf in hr["handle_files"]:
+                    fpath = hf["path"]
+                    img_bytes = image_cache.get(fpath)
+                    if img_bytes is None:
+                        continue  # render failed — skip
+                    img_buf = io.BytesIO(img_bytes)
+                    img_buf.name = f"{handle}.png"
+                    try:
+                        try:
+                            await safe_api_call(sender_bot.send_photo, chat_id=group_id, photo=img_buf)
+                        except Exception as pe:
+                            log.warning(f"send_photo→{group_id} {handle} ({pe}), trying document")
+                            img_buf.seek(0)
+                            await safe_api_call(sender_bot.send_document, chat_id=group_id, document=img_buf, filename=f"{handle}.png")
+                        sent_any = True
+                        await asyncio.sleep(0.2)
+                    except Forbidden as e:
+                        log.warning(f"Group {group_id} forbidden ({e}), skipping group.")
+                        return sent_any
+                    except Exception as e:
+                        log.error(f"Image to group {group_id}: {e}")
+
+                # Send combined Excel
+                excel_sent = False
+                combined_path = hr.get("handle_excel_path")
+                combined_bytes = excel_cache.get(combined_path)
+                if combined_bytes is None and combined_path and os.path.exists(combined_path):
+                    try:
+                        with open(combined_path, "rb") as ef:
+                            combined_bytes = ef.read()
+                            excel_cache[combined_path] = combined_bytes
+                    except Exception:
+                        pass
+                if combined_bytes:
+                    try:
+                        ef_buf = io.BytesIO(combined_bytes)
+                        ef_buf.name = os.path.basename(combined_path)
                         await safe_api_call(
-                            context.bot.send_document,
+                            sender_bot.send_document,
                             chat_id=group_id,
-                            document=ef,
+                            document=ef_buf,
                             filename=os.path.basename(combined_path),
                         )
                         sent_any = True
                         excel_sent = True
                         await asyncio.sleep(0.2)
-                except Forbidden as e:
-                    log.warning(f"Group {group_id} forbidden ({e}), skipping.")
-                    skip_group = True
-                    break
-                except Exception as e:
-                    log.error(f"Combined Excel file to group {group_id} for {handle}: {e}")
-
-            if skip_group:
-                break
-
-            if not excel_sent:
-                for hf in hr.get("handle_files", []):
-                    try:
-                        with open(hf["path"], "rb") as ef:
-                            await safe_api_call(
-                                context.bot.send_document,
-                                chat_id=group_id,
-                                document=ef,
-                                filename=os.path.basename(hf["path"]),
-                            )
-                            sent_any = True
-                            await asyncio.sleep(0.2)
                     except Forbidden as e:
-                        log.warning(f"Group {group_id} forbidden ({e}), skipping.")
-                        skip_group = True
-                        break
+                        log.warning(f"Group {group_id} forbidden ({e}), skipping group.")
+                        return sent_any
                     except Exception as e:
-                        log.error(f"Excel file to group {group_id} for {handle}: {e}")
+                        log.error(f"Combined Excel to group {group_id} for {handle}: {e}")
 
-            if skip_group:
-                break
+                if not excel_sent:
+                    for hf in hr.get("handle_files", []):
+                        fpath = hf.get("path")
+                        hf_bytes = excel_cache.get(fpath)
+                        if hf_bytes is None and fpath and os.path.exists(fpath):
+                            try:
+                                with open(fpath, "rb") as ef:
+                                    hf_bytes = ef.read()
+                                    excel_cache[fpath] = hf_bytes
+                            except Exception:
+                                pass
+                        if hf_bytes:
+                            try:
+                                ef_buf = io.BytesIO(hf_bytes)
+                                ef_buf.name = os.path.basename(fpath)
+                                await safe_api_call(
+                                    sender_bot.send_document,
+                                    chat_id=group_id,
+                                    document=ef_buf,
+                                    filename=os.path.basename(fpath),
+                                )
+                                sent_any = True
+                                await asyncio.sleep(0.2)
+                            except Forbidden as e:
+                                log.warning(f"Group {group_id} forbidden ({e}), skipping group.")
+                                return sent_any
+                            except Exception as e:
+                                log.error(f"Excel to group {group_id} for {handle}: {e}")
 
-            try:
-                await safe_api_call(context.bot.send_message, chat_id=group_id, text=hr["remark"])
-                sent_any = True
-                await asyncio.sleep(0.2)
-            except Forbidden as e:
-                log.warning(f"Group {group_id} forbidden ({e}), skipping.")
-                skip_group = True
-                break
-            except Exception as e:
-                log.error(f"Remark to group {group_id}: {e}")
+                # Send remark text
+                try:
+                    await safe_api_call(sender_bot.send_message, chat_id=group_id, text=hr["remark"])
+                    sent_any = True
+                    await asyncio.sleep(0.2)
+                except Forbidden as e:
+                    log.warning(f"Group {group_id} forbidden ({e}), skipping group.")
+                    return sent_any
+                except Exception as e:
+                    log.error(f"Remark to group {group_id}: {e}")
 
-        if wants_all and not skip_group:
-            try:
-                with open(result["final_xlsx"], "rb") as f:
+            # Send final combined Excel + summary caption (for groups that want *)
+            if wants_all:
+                final_xlsx = result.get("final_xlsx")
+                final_bytes = excel_cache.get(final_xlsx)
+                if final_bytes is None and final_xlsx and os.path.exists(final_xlsx):
+                    try:
+                        with open(final_xlsx, "rb") as f:
+                            final_bytes = ef.read()
+                            excel_cache[final_xlsx] = final_bytes
+                    except Exception:
+                        pass
+                if final_bytes:
+                    try:
+                        ef_buf = io.BytesIO(final_bytes)
+                        ef_buf.name = os.path.basename(final_xlsx)
+                        await safe_api_call(
+                            sender_bot.send_document,
+                            chat_id=group_id,
+                            document=ef_buf,
+                            filename=os.path.basename(final_xlsx),
+                        )
+                        sent_any = True
+                        await asyncio.sleep(0.2)
+                    except Exception as e:
+                        log.error(f"Final Excel to group {group_id}: {e}")
+                try:
                     await safe_api_call(
-                        context.bot.send_document,
+                        sender_bot.send_message,
                         chat_id=group_id,
-                        document=f,
-                        filename=os.path.basename(result["final_xlsx"]),
+                        text=result["summary_caption"],
                     )
                     sent_any = True
                     await asyncio.sleep(0.2)
-            except Exception as e:
-                log.error(f"Excel to group {group_id}: {e}")
-            try:
-                await safe_api_call(
-                    context.bot.send_message,
-                    chat_id=group_id,
-                    text=result["summary_caption"],
-                )
-                sent_any = True
-                await asyncio.sleep(0.2)
-            except Exception as e:
-                log.error(f"Summary to group {group_id}: {e}")
+                except Exception as e:
+                    log.error(f"Summary to group {group_id}: {e}")
 
-        if sent_any:
-            sent_groups += 1
-            await asyncio.sleep(1.0)
+            if sent_any:
+                await asyncio.sleep(1.0)
+            return sent_any
 
+    # ── Fan out to all groups concurrently (max 3 parallel) ──────────────────
+    sem = asyncio.Semaphore(3)
+    tasks = [_send_to_group(gid, sem) for gid in forward_groups]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    sent_groups = sum(1 for r in results if r is True)
     return sent_groups
 
 
@@ -1399,8 +1582,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if zone_key == "penalty":
             target_label = " ".join(args[1:]) if len(args) > 1 else "ALL"
             msg = await send_requester_text(update, context, f"⏳ Generating INVENTORY PENALTY REPORT ({target_label.upper()})...")
-            tmpdir = tempfile.mkdtemp(prefix="penalty_")
-            track_report_dir(tmpdir)
+            tmpdir = _make_run_cache("penalty_run")
             stamp  = datetime.now().strftime("%d.%m_%HH%M")
             src    = os.path.join(tmpdir, f"export_{stamp}.xlsx")
             try:
@@ -1431,8 +1613,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if zone_key == "speed":
             target_label = " ".join(args[1:]) if len(args) > 1 else "ALL"
             msg = await send_requester_text(update, context, f"⏳ Generating EXECUTIVE DELIVERY SPEED DASHBOARD ({target_label.upper()})...")
-            tmpdir = tempfile.mkdtemp(prefix="speed_")
-            track_report_dir(tmpdir)
+            tmpdir = _make_run_cache("speed_run")
             stamp  = datetime.now().strftime("%d.%m_%HH%M")
             src    = os.path.join(tmpdir, f"export_{stamp}.xlsx")
             try:
@@ -1477,8 +1658,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await send_requester_text(update, context, f"Fetching data for {zone_label} summary...")
 
-    tmpdir = tempfile.mkdtemp(prefix="total_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("total_run")
     stamp  = datetime.now().strftime("%d.%m_%HH%M")
     src    = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -1630,6 +1810,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
             urgent_counts=total_urgent_counts if total_urgent_counts else None,
             fee_counts=total_fee_counts if total_fee_counts else None,
             cod_counts=total_cod_counts if total_cod_counts else None,
+            vip_counts=result.get("vip_counts"),
         )
         img_buf.name = "summary.png"
         await send_requester_photo(update, context, img_buf, caption=result["summary_caption"])
@@ -1680,8 +1861,7 @@ async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ytd_tag = f" — YESTERDAY {target_date.strftime('%d/%m/%Y')}" if is_ytd else ""
     msg = await send_requester_text(update, context, f"⏳ Generating INVENTORY PENALTY REPORT ({target_label.upper()}{ytd_tag})...")
-    tmpdir = tempfile.mkdtemp(prefix="penalty_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("penalty_run")
     stamp = datetime.now().strftime("%d.%m_%HH%M")
     src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -1715,6 +1895,7 @@ async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if tgt_upper in ("ALL", "TOTAL", "MEGA") and not no_fwd:
+            sender_bot = get_group_sender_bot(context)
             # A. Forward to 5 Zone Groups (Unless skip_zone)
             if not skip_zone:
                 zone_fwd_map = cfg.get("zone_forward_mapping", {})
@@ -1736,14 +1917,14 @@ async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             try:
                                 z_img = penalty_report.render_penalty_summary_image(z_xlsx)
                                 z_img.name = f"PENALTY_SUMMARY_{z_name.replace(' ', '_')}{suffix_file}.png"
-                                await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=z_img, caption=z_caption, parse_mode="Markdown")
+                                await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=z_img, caption=z_caption, parse_mode="Markdown")
                             except Exception as e_fwd_img:
                                 log.warning("Failed forwarding penalty photo to zone group %s: %s", gid, e_fwd_img)
 
                             try:
                                 with open(z_xlsx, "rb") as z_f_doc:
                                     await safe_api_call(
-                                        context.bot.send_document,
+                                        sender_bot.send_document,
                                         chat_id=int(gid),
                                         document=z_f_doc,
                                         filename=os.path.basename(z_xlsx)
@@ -1776,14 +1957,14 @@ async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             b_img = penalty_report.render_penalty_summary_image(br_xlsx)
                             b_img.name = f"PENALTY_SUMMARY_{br_code}{suffix_file}.png"
-                            await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=b_img, caption=b_caption, parse_mode="Markdown")
+                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=b_img, caption=b_caption, parse_mode="Markdown")
                         except Exception as e_b_img:
                             log.warning("Failed sending penalty photo to branch group %s: %s", br_code, e_b_img)
 
                         try:
                             with open(br_xlsx, "rb") as b_f_doc:
                                 await safe_api_call(
-                                    context.bot.send_document,
+                                    sender_bot.send_document,
                                     chat_id=int(gid),
                                     document=b_f_doc,
                                     filename=os.path.basename(br_xlsx)
@@ -1833,8 +2014,7 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     suffix_file = "_YTD" if is_ytd else ""
 
     msg = await send_requester_text(update, context, f"⏳ [1/3] Downloading TMS data ({target_label.upper()}{ytd_tag})...")
-    tmpdir = tempfile.mkdtemp(prefix="speed_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("speed_run")
     stamp = datetime.now().strftime("%d.%m_%HH%M")
     src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -1881,6 +2061,7 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if tgt_upper in ("ALL", "TOTAL", "MEGA") and not no_fwd:
+            sender_bot = get_group_sender_bot(context)
             # A. Forward to 5 Zone Groups (Unless skip_zone)
             if not skip_zone:
                 zone_fwd_map = cfg.get("zone_forward_mapping", {})
@@ -1907,14 +2088,14 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 try:
                                     z_img = await asyncio.to_thread(speed_report.render_speed_summary_image, z_xlsx)
                                     z_img.name = f"SPEED_SUMMARY_{z_name.replace(' ', '_')}{suffix_file}.png"
-                                    await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=z_img, caption=z_caption, parse_mode="Markdown")
+                                    await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=z_img, caption=z_caption, parse_mode="Markdown")
                                 except Exception as e_fwd_img:
                                     log.warning("Failed forwarding speed photo to zone group %s: %s", gid, e_fwd_img)
 
                                 try:
                                     with open(z_xlsx, "rb") as z_f_doc:
                                         await safe_api_call(
-                                            context.bot.send_document,
+                                            sender_bot.send_document,
                                             chat_id=int(gid),
                                             document=z_f_doc,
                                             filename=os.path.basename(z_xlsx)
@@ -1953,14 +2134,14 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             b_img = await asyncio.to_thread(speed_report.render_speed_summary_image, br_xlsx)
                             b_img.name = f"SPEED_SUMMARY_{br_code}{suffix_file}.png"
-                            await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=b_img, caption=b_caption, parse_mode="Markdown")
+                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=b_img, caption=b_caption, parse_mode="Markdown")
                         except Exception as e_b_img:
                             log.warning("Failed sending speed photo to branch group %s: %s", br_code, e_b_img)
 
                         try:
                             with open(br_xlsx, "rb") as b_f_doc:
                                 await safe_api_call(
-                                    context.bot.send_document,
+                                    sender_bot.send_document,
                                     chat_id=int(gid),
                                     document=b_f_doc,
                                     filename=os.path.basename(br_xlsx)
@@ -1993,8 +2174,7 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_label = " ".join(args) if args else "Zone 1"
 
     msg = await send_requester_text(update, context, f"Generating SHIPMENTS INCOMING REPORT ({target_label})...")
-    tmpdir = tempfile.mkdtemp(prefix="tomorrow_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("tomorrow_run")
     stamp = datetime.now().strftime("%d.%m_%HH%M")
     src   = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -2025,6 +2205,8 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_or_send_requester_text(msg, update, context, f"✅ Generated SHIPMENTS INCOMING REPORT ({target_label}). Forwarding to groups skipped (bot is paused).")
             return
 
+        sender_bot = get_group_sender_bot(context)
+
         if tgt_upper in ("BRANCH", "BRANCHES", "PROVINCE", "PROVINCES"):
             fwd_map = get_forward_mapping(cfg)
             total_sent_branches = 0
@@ -2042,13 +2224,13 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             b_img = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, br_xlsx)
                             b_img.name = f"EXECUTIVE_SUMMARY_{br_code}.png"
-                            await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=b_img)
+                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=b_img)
                         except Exception as e_bp:
                             log.warning("Failed sending branch photo to group %s: %s", gid, e_bp)
 
                         with open(br_xlsx, "rb") as f_doc:
                             await safe_api_call(
-                                context.bot.send_document,
+                                sender_bot.send_document,
                                 chat_id=int(gid),
                                 document=f_doc,
                                 filename=os.path.basename(br_xlsx),
@@ -2077,13 +2259,13 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             try:
                                 z_img = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, z_xlsx)
                                 z_img.name = f"EXECUTIVE_SUMMARY_{z_name.replace(' ', '_')}.png"
-                                await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=z_img)
+                                await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=z_img)
                             except Exception as e_zp:
                                 log.warning("Failed sending zone photo to group %s: %s", gid, e_zp)
 
                             with open(z_xlsx, "rb") as f_doc:
                                 await safe_api_call(
-                                    context.bot.send_document,
+                                    sender_bot.send_document,
                                     chat_id=int(gid),
                                     document=f_doc,
                                     filename=os.path.basename(z_xlsx),
@@ -2109,13 +2291,13 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             b_img = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, br_xlsx)
                             b_img.name = f"EXECUTIVE_SUMMARY_{br_code}.png"
-                            await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=b_img)
+                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=b_img)
                         except Exception as e_bp:
                             log.warning("Failed sending branch photo to group %s: %s", gid, e_bp)
 
                         with open(br_xlsx, "rb") as f_doc:
                             await safe_api_call(
-                                context.bot.send_document,
+                                sender_bot.send_document,
                                 chat_id=int(gid),
                                 document=f_doc,
                                 filename=os.path.basename(br_xlsx),
@@ -2139,13 +2321,13 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             img_buf = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, out_xlsx)
                             img_buf.name = f"EXECUTIVE_SUMMARY_{target_label.replace(' ', '_')}.png"
-                            await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=img_buf)
+                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=img_buf)
                         except Exception as e_sing_img:
                             log.warning("Failed sending single zone photo: %s", e_sing_img)
 
                         with open(out_xlsx, "rb") as f_doc:
                             await safe_api_call(
-                                context.bot.send_document,
+                                sender_bot.send_document,
                                 chat_id=int(gid),
                                 document=f_doc,
                                 filename=os.path.basename(out_xlsx),
@@ -2162,13 +2344,13 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             img_buf = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, out_xlsx)
                             img_buf.name = f"EXECUTIVE_SUMMARY_{target_label.replace(' ', '_')}.png"
-                            await safe_api_call(context.bot.send_photo, chat_id=int(gid), photo=img_buf)
+                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=img_buf)
                         except Exception as e_sing_img:
                             log.warning("Failed sending single branch photo: %s", e_sing_img)
 
                         with open(out_xlsx, "rb") as f_doc:
                             await safe_api_call(
-                                context.bot.send_document,
+                                sender_bot.send_document,
                                 chat_id=int(gid),
                                 document=f_doc,
                                 filename=os.path.basename(out_xlsx),
@@ -2809,25 +2991,31 @@ def _post_office_export_row(item, fallback_branch=""):
     branch = item.get("branch") if isinstance(item.get("branch"), dict) else {}
     code = str(item.get("code") or item.get("Pickup Branch") or item.get("Post code") or "").strip().upper()
     branch_code = str(
-        item.get("main_branch_code")
-        or item.get("parentDepartmentCode")
-        or item.get("Branch Code")
+        item.get("parentDepartmentCode")
         or branch.get("code")
         or fallback_branch
-        or ""
+        or (code[:3] if len(code) >= 3 else "")
     ).strip().upper()
 
-    if len(branch_code) == 3:
-        branch_code = PROVINCE_TO_MAIN_BRANCH.get(branch_code, branch_code)
+    raw_name = item.get("name") or item.get("enUsName") or item.get("kmKhmName") or item.get("viVnName") or ""
+    po_name = _strip_department_code(raw_name, code).strip()
 
-    commune_en = _strip_department_code(
-        item.get("Commune EN") or item.get("Post office name") or item.get("enUsName") or item.get("name") or item.get("viVnName"),
-        code,
-    )
+    commune_en = po_name
     commune_khmer = _strip_department_code(
-        item.get("Commune Khmer") or item.get("kmKhmName") or item.get("enUsName") or item.get("name"),
+        item.get("Commune Khmer") or item.get("kmKhmName") or po_name,
         code,
     )
+    province_en = BRANCH_TO_PROVINCE_EN.get(branch_code) or branch.get("name") or branch.get("enUsName") or branch_code
+    
+    prov_kh, dist_en, dist_kh, comm_kh = _map_to_administrative_division(branch_code, commune_en, commune_khmer)
+    
+    phone = _clean_export_phone(item.get("Phone Number") or item.get("Phone") or item.get("phone") or item.get("phone_detail") or item.get("hpoUsername")) or _get_fallback_location_phone(code, branch_code)
+
+    level = str(item.get("Post Office Level") or item.get("type") or item.get("Category") or item.get("typeLabel") or "AGENT").strip()
+    status = str(item.get("Status") or item.get("status") or item.get("statusLabel") or "ACTIVE").strip()
+
+    address = f"{commune_en}, {dist_en}, {province_en}, Cambodia"
+
     branch_en = _strip_department_code(
         item.get("Branch EN") or branch.get("enUsName") or branch.get("name") or item.get("branch_name"),
         branch_code,
@@ -2836,41 +3024,45 @@ def _post_office_export_row(item, fallback_branch=""):
         item.get("Branch Khmer") or branch.get("kmKhmName") or branch.get("enUsName") or branch.get("name"),
         branch_code,
     )
-    phone = _clean_export_phone(item.get("Phone Number") or item.get("Phone") or item.get("phone") or item.get("phone_detail")) or _get_fallback_location_phone(code, branch_code)
-    
+
     from speed_report import MAIN_36_BRANCHES as _36
     main_b = PROVINCE_TO_MAIN_BRANCH.get(branch_code) or PROVINCE_TO_MAIN_BRANCH.get(code[:3]) or (code if code in _36 else "PNPP001")
     main_branch_phone = _clean_export_phone(item.get("Main Branch Phone") or item.get("main_branch_phone")) or _get_fallback_location_phone(main_b)
 
-    category = _classify_facility(code, item.get("Category") or item.get("Post office level") or item.get("typeLabel") or item.get("type"))
-
     search_parts = [
         code,
-        commune_en,
-        commune_khmer,
+        po_name,
         phone,
         branch_code,
-        branch_en,
-        branch_khmer,
-        category,
+        province_en,
+        dist_en,
+        level,
     ]
 
     return {
+        "Post Code": code,
+        "Post Office Name": po_name,
+        "Post Office Level": level,
+        "Phone": phone,
+        "Province": province_en,
+        "District": dist_en,
+        "Commune": commune_en,
+        "Address": address,
+        "Status": status,
+        "Branch": branch_code,
+
+        # Backward compatibility fields
         "Pickup Branch": code,
-        "Post code": code,
-        "Post office name": commune_en,
         "Commune EN": commune_en,
         "Commune Khmer": commune_khmer,
-        "Phone": phone,
         "Phone Number": phone,
         "Main Branch Phone": main_branch_phone,
         "Branch Code": branch_code,
         "Branch EN": branch_en,
         "Branch Khmer": branch_khmer,
-        "Category": category,
-        "Post office level": category,
-        "Type": str(item.get("Category") or item.get("typeLabel") or item.get("type") or "").strip(),
-        "Status": str(item.get("Status") or item.get("statusLabel") or item.get("status") or "In effect").strip(),
+        "Category": level,
+        "Post office level": level,
+        "Type": level,
         "Latitude": item.get("Latitude") or item.get("latitude"),
         "Longitude": item.get("Longitude") or item.get("longitude"),
         "Search Text": " | ".join(part for part in search_parts if part),
@@ -2963,6 +3155,8 @@ DISTRICT_FALLBACK_KH = {
     "ROT": "បានលុង",
     "MON": "សែនមនោរម្យ",
     "STU": "ស្ទឹងត្រែង",
+    "KEP": "កែប",
+    "PAI": "ប៉ៃលិន",
 }
 
 DISTRICT_FALLBACK_EN = {
@@ -2989,6 +3183,8 @@ DISTRICT_FALLBACK_EN = {
     "ROT": "Banlung",
     "MON": "Senmonorom",
     "STU": "Stung Treng",
+    "KEP": "Kep",
+    "PAI": "Pailin",
 }
 
 _gazetteer_data = None
@@ -3035,9 +3231,8 @@ def _map_to_administrative_division(branch_code, commune_en_raw, commune_kh_raw)
 def _write_post_office_export_excel(df, out_path, sheet_label, title):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
 
-    DARK_BLUE = "172033"
+    DARK_BLUE = "1B4F72"
     WHITE = "FFFFFF"
     BORDER_CLR = "CCCCCC"
     
@@ -3050,10 +3245,21 @@ def _write_post_office_export_excel(df, out_path, sheet_label, title):
     
     wb = Workbook()
     ws = wb.active
-    ws.title = "Stores"
+    ws.title = "Post Offices"
     ws.views.sheetView[0].showGridLines = True
     
-    data_headers = ["Province *", "District *", "District KH", "Delivery Store *", "Category *", "Phone Number", "Main Branch Phone", "Latitude", "Longitude"]
+    data_headers = [
+        "Post Code",
+        "Post Office Name",
+        "Post Office Level",
+        "Phone",
+        "Province",
+        "District",
+        "Commune",
+        "Address",
+        "Status",
+        "Branch"
+    ]
     
     for col_idx, col_name in enumerate(data_headers, 1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
@@ -3063,57 +3269,40 @@ def _write_post_office_export_excel(df, out_path, sheet_label, title):
         cell.border = thin_border
     ws.row_dimensions[1].height = 28
     
+    col_widths = {
+        "A": 16,
+        "B": 26,
+        "C": 20,
+        "D": 16,
+        "E": 22,
+        "F": 22,
+        "G": 22,
+        "H": 65,
+        "I": 14,
+        "J": 12,
+    }
+    for col_letter, width in col_widths.items():
+        ws.column_dimensions[col_letter].width = width
+
     for idx, row in df.iterrows():
-        branch_code = str(row.get("Branch Code", "")).strip().upper()
-        commune_en = str(row.get("Commune EN", ""))
-        commune_kh = str(row.get("Commune Khmer", ""))
-        code = str(row.get("Pickup Branch", ""))
-        category = str(row.get("Category") or _classify_facility(code, row.get("Type"))).strip()
-        phone = _clean_export_phone(row.get("Phone Number") or row.get("Phone") or row.get("phone"))
-        main_branch_phone = _clean_export_phone(row.get("Main Branch Phone") or row.get("main_branch_phone"))
-        lat = row.get("Latitude")
-        lon = row.get("Longitude")
-        
-        prov_kh, dist_en, dist_kh, comm_kh = _map_to_administrative_division(branch_code, commune_en, commune_kh)
-        store_name = f"{code} - {commune_en}"
-        
         row_idx = idx + 2
-        
-        ws.cell(row=row_idx, column=1, value=prov_kh).font = Font(name="Calibri", size=10)
-        ws.cell(row=row_idx, column=2, value=dist_en).font = Font(name="Calibri", size=10)
-        ws.cell(row=row_idx, column=3, value=dist_kh).font = Font(name="Calibri", size=10)
-        ws.cell(row=row_idx, column=4, value=store_name).font = Font(name="Calibri", size=10)
-        ws.cell(row=row_idx, column=5, value=category).font = Font(name="Calibri", size=10, bold=True)
-        
-        c_ph = ws.cell(row=row_idx, column=6, value=phone)
-        c_ph.font = Font(name="Calibri", size=10)
-        c_ph.number_format = "@"
-        
-        c_mb = ws.cell(row=row_idx, column=7, value=main_branch_phone)
-        c_mb.font = Font(name="Calibri", size=10)
-        c_mb.number_format = "@"
-        
-        ws.cell(row=row_idx, column=8, value=lat).font = Font(name="Calibri", size=10)
-        ws.cell(row=row_idx, column=9, value=lon).font = Font(name="Calibri", size=10)
-        
-        for col_idx in range(1, 10):
-            ws.cell(row=row_idx, column=col_idx).border = thin_border
-            
-    ws.column_dimensions["A"].width = 25
-    ws.column_dimensions["B"].width = 25
-    ws.column_dimensions["C"].width = 25
-    ws.column_dimensions["D"].width = 45
-    ws.column_dimensions["E"].width = 20
-    ws.column_dimensions["F"].width = 20
-    ws.column_dimensions["G"].width = 20
-    ws.column_dimensions["H"].width = 15
-    ws.column_dimensions["I"].width = 15
-    
+        for col_idx, col_name in enumerate(data_headers, 1):
+            val = row.get(col_name, "")
+            cell = ws.cell(row=row_idx, column=col_idx, value="" if pd.isna(val) else str(val))
+            cell.font = Font(name="Calibri", size=10)
+            cell.border = thin_border
+            if col_name in ("Post Code", "Post Office Level", "Status", "Branch"):
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_name == "Phone":
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.number_format = "@"
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:I{len(df)+1}"
+    ws.auto_filter.ref = f"A1:J{len(df)+1}"
     
     wb.save(out_path)
-
 
 
 async def send_pickup_branch_export(update, context, cfg, raw_args):
@@ -3132,36 +3321,35 @@ async def send_pickup_branch_export(update, context, cfg, raw_args):
     try:
         import pandas as pd
 
-        post_offices = []
         branch_errors = []
-        
-        # Concurrency limit of 4 to avoid hitting server limits/500 errors
-        sem = asyncio.Semaphore(4)
-        
-        async def sem_download(code):
-            async with sem:
-                # Stagger the requests slightly to prevent a burst of 4 requests at the exact same millisecond
-                await asyncio.sleep(0.3)
-                return await asyncio.to_thread(
-                    downloader.download_post_offices,
-                    cfg["api"],
-                    code,
-                )
-        
-        # Launch parallel downloads with semaphore limit
-        tasks = [sem_download(bc) for bc in branch_codes]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for branch_code, res in zip(branch_codes, results):
-            if isinstance(res, Exception):
-                branch_errors.append(f"{branch_code}: {res}")
-                log.warning("Export failed for branch %s: %s", branch_code, res)
-            else:
-                for item in res:
-                    if isinstance(item, dict):
-                        item = dict(item)
-                        item["_export_branch_query"] = branch_code
-                    post_offices.append(item)
+        if all_mode and not branch_args:
+            post_offices = await asyncio.to_thread(downloader.download_all_post_offices, cfg["api"])
+        else:
+            post_offices = []
+            sem = asyncio.Semaphore(4)
+            
+            async def sem_download(code):
+                async with sem:
+                    await asyncio.sleep(0.3)
+                    return await asyncio.to_thread(
+                        downloader.download_post_offices,
+                        cfg["api"],
+                        code,
+                    )
+            
+            tasks = [sem_download(bc) for bc in branch_codes]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for branch_code, res in zip(branch_codes, results):
+                if isinstance(res, Exception):
+                    branch_errors.append(f"{branch_code}: {res}")
+                    log.warning("Export failed for branch %s: %s", branch_code, res)
+                else:
+                    for item in res:
+                        if isinstance(item, dict):
+                            item = dict(item)
+                            item["_export_branch_query"] = branch_code
+                        post_offices.append(item)
 
         if not post_offices:
             extra = "\n".join(branch_errors[:5])
@@ -3210,10 +3398,14 @@ async def send_pickup_branch_export(update, context, cfg, raw_args):
             if isinstance(item, dict)
         ]
         df = pd.DataFrame(rows)
-        if "Pickup Branch" in df.columns:
+        if "Post Code" in df.columns:
+            df = df[df["Post Code"].astype(str).str.strip() != ""].copy()
+            df = df.drop_duplicates(subset=["Post Code"], keep="first")
+        elif "Pickup Branch" in df.columns:
             df = df[df["Pickup Branch"].astype(str).str.strip() != ""].copy()
             df = df.drop_duplicates(subset=["Pickup Branch"], keep="first")
-        sort_cols = [c for c in ("Branch Code", "Pickup Branch") if c in df.columns]
+
+        sort_cols = [c for c in ("Branch", "Post Code", "Branch Code", "Pickup Branch") if c in df.columns]
         if sort_cols:
             df = df.sort_values(sort_cols).reset_index(drop=True)
 
@@ -3263,6 +3455,7 @@ async def send_pickup_branch_export(update, context, cfg, raw_args):
 
     except Exception as e:
         log.exception("Error in pickup branch export")
+        await edit_or_send_requester_text(msg, update, context, f"Export failed: {e}")
         await edit_or_send_requester_text(msg, update, context, f"Export failed: {e}")
 
 
@@ -3517,7 +3710,7 @@ async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     cfg = load_config()
-    tmpdir = tempfile.mkdtemp(prefix="find_")
+    tmpdir = _make_run_cache("find_run")
     stamp = datetime.now().strftime("%d.%m_%HH%M")
     src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -4822,8 +5015,7 @@ async def run_push(
         )
         return
 
-    tmpdir = tempfile.mkdtemp(prefix="push_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("push_run")
     stamp  = datetime.now().strftime("%d.%m_%HH%M")
     src    = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -5020,7 +5212,7 @@ async def run_push(
         actual_forward_groups = []
 
         for group_id_str in forward_groups:
-            allowed = forward_mapping.get(str(group_id_str), ["*"])
+            allowed = forward_mapping.get(str(group_id_str), [])
             wants_all = "*" in allowed
             will_receive = False
             for hr in result["handle_results"]:
@@ -5034,7 +5226,7 @@ async def run_push(
         
         if not test_mode and forward_groups:
             for group_id_str in forward_groups:
-                allowed = forward_mapping.get(str(group_id_str), ["*"])
+                allowed = forward_mapping.get(str(group_id_str), [])
                 if "*" in allowed:
                     covered_handles.add("*")
                 else:
@@ -5191,9 +5383,14 @@ async def run_push(
                         handle: result.get("cod_counts", {}).get(handle, 0.0)
                         for handle in zone_handles
                     }
+                    zone_vip_counts = {
+                        handle: result.get("vip_counts", {}).get(handle, 0)
+                        for handle in zone_handles
+                    }
                     zone_result["report_label"] = zone_label
 
                     # 1. Summary image
+                    sender_bot = get_group_sender_bot(context)
                     img_buf = generate_summary.build_summary_image(
                         zone_results,
                         zone_overall,
@@ -5202,9 +5399,10 @@ async def run_push(
                         urgent_counts=zone_urgent_counts if zone_urgent_counts else None,
                         fee_counts=zone_fee_counts if zone_fee_counts else None,
                         cod_counts=zone_cod_counts if zone_cod_counts else None,
+                        vip_counts=zone_vip_counts if any(zone_vip_counts.values()) else None,
                     )
                     img_buf.name = f"{zone_key}_summary.png"
-                    await safe_api_call(context.bot.send_photo, chat_id=group_id, photo=img_buf)
+                    await safe_api_call(sender_bot.send_photo, chat_id=group_id, photo=img_buf)
                     await asyncio.sleep(0.5)
 
                     # 2. Total Excel
@@ -5212,7 +5410,7 @@ async def run_push(
                     generate_summary.build_total_excel(zone_result, zone_xlsx)
                     with open(zone_xlsx, "rb") as f:
                         await safe_api_call(
-                            context.bot.send_document,
+                            sender_bot.send_document,
                             chat_id=group_id,
                             document=f,
                             filename=os.path.basename(zone_xlsx),
@@ -5545,8 +5743,7 @@ async def cmd_delayed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         min_days = int(args[0])
 
     msg = await send_requester_text(update, context, f"⏳ Fetching live TMS data for Delayed Backlog (>= {min_days} Days / 72+ Hours)...")
-    tmpdir = tempfile.mkdtemp(prefix="delayed_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("delayed_run")
     stamp = datetime.now().strftime("%d.%m_%HH%M")
     src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
@@ -5766,8 +5963,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_group_command(update, context)
     cfg = load_config()
     msg = await send_requester_text(update, context, "Building active bills report...")
-    tmpdir = tempfile.mkdtemp(prefix="report_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("report_run")
     stamp = datetime.now().strftime("%d.%m_%HH%M")
     src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
     try:
@@ -6151,8 +6347,7 @@ async def cmd_daily_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_display = target_date.strftime("%d/%m")
     msg = await send_requester_text(update, context, f"Generating daily report for {date_display}...")
     
-    tmpdir = tempfile.mkdtemp(prefix="daily_report_")
-    track_report_dir(tmpdir)
+    tmpdir = _make_run_cache("daily_report_run")
     src = os.path.join(tmpdir, f"export_pickup_revenue_{target_date.strftime('%Y%m%d')}.xlsx")
     
     last_week_date = target_date - timedelta(days=7)
@@ -6641,27 +6836,22 @@ def main():
     server_thread = threading.Thread(target=start_webapp_server, daemon=True)
     server_thread.start()
 
-    cfg   = load_config()
-    tg    = cfg["telegram"]
-    token = tg["bot_token"]
-    if "DIEN_" in token:
-        raise SystemExit("Set bot_token in config.json first.")
-
+def create_bot_app(token: str, proxy_url: str = None) -> Application:
     builder = (
         Application.builder()
         .token(token)
+        .connection_pool_size(100)
         .connect_timeout(30.0)
         .read_timeout(30.0)
         .write_timeout(30.0)
-        .pool_timeout(30.0)
+        .pool_timeout(60.0)
         .get_updates_connect_timeout(30.0)
         .get_updates_read_timeout(30.0)
     )
 
-    proxy_url = tg.get("proxy_url")
     if proxy_url:
         builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
-        log.info("Using proxy: %s", proxy_url)
+        log.info("[%s...] Using proxy: %s", token[:12], proxy_url)
 
     app = builder.build()
     app.add_handler(CommandHandler("app",          cmd_app))
@@ -6709,15 +6899,70 @@ def main():
     app.add_handler(CommandHandler("test",         cmd_test))
     app.add_handler(CommandHandler("testmode",     cmd_test_mode))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    return app
 
-    log.info("Bot running. Commands: push, /total, /vs, /vs2, /speed, /tomorrow, /export, /find, /ask, /check, /trace, /statues, /help, /pause, /resume, /status, /mode, /register, /groups, /add, /remove, /list, /delay, /undelay, /delaylist, /clean, /qr, /deletereport, /dailyreport")
+
+def run_bot_in_thread(token: str, proxy_url: str = None):
+    """Run a single bot instance in its own event loop thread."""
+    import time
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    app = create_bot_app(token, proxy_url)
+    log.info("Bot instance running for token: %s...", token[:12])
     while True:
         try:
-            app.run_polling(allowed_updates=Update.ALL_TYPES)
+            app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
             break
         except Exception as e:
-            log.error("Bot polling error encountered: %s. Restarting polling in 5 seconds...", e)
+            log.error("Bot polling error [%s...]: %s. Restarting polling in 5s...", token[:12], e)
             time.sleep(5)
+
+
+def main():
+    # Clean up old accumulated temp dirs from previous sessions
+    _cleanup_old_temp_bot_dirs()
+    # Pre-create fixed run-cache dirs so first /push is fast
+    for _cache_name in ("push_run", "total_run", "penalty_run", "speed_run",
+                        "tomorrow_run", "delayed_run", "report_run", "find_run"):
+        os.makedirs(os.path.join(HERE, "cache", _cache_name), exist_ok=True)
+
+    cfg   = load_config()
+    tg    = cfg["telegram"]
+
+    tokens = []
+    primary_token = tg.get("bot_token")
+    if primary_token and "DIEN_" not in primary_token:
+        tokens.append(primary_token)
+
+    global _PRIMARY_TOKEN
+    _PRIMARY_TOKEN = primary_token
+
+    configured_tokens = tg.get("bot_tokens", [])
+    if isinstance(configured_tokens, list):
+        for t in configured_tokens:
+            if t and "DIEN_" not in t and t not in tokens:
+                tokens.append(t)
+
+    # Secondary Bot Token (2 in 1 mode)
+    secondary_token = "8991532647:AAGDzP1TLj8c1fQ1u7v5YQTbMNMtOVtuBto"
+    if secondary_token not in tokens:
+        tokens.append(secondary_token)
+
+    if not tokens:
+        raise SystemExit("Set bot_token or bot_tokens in config.json first.")
+
+    proxy_url = tg.get("proxy_url")
+
+    log.info("Starting %d Bot Instance(s) (2-in-1 Mode): %s", len(tokens), [t[:12] + "..." for t in tokens])
+    log.info("Bot running. Commands: push, /total, /vs, /vs2, /speed, /tomorrow, /export, /find, /ask, /check, /trace, /statues, /help, /pause, /resume, /status, /mode, /register, /groups, /add, /remove, /list, /delay, /undelay, /delaylist, /clean, /qr, /deletereport, /dailyreport")
+
+    # If multiple tokens, run all but the last in worker threads, and run the last in main thread
+    for tok in tokens[:-1]:
+        t = threading.Thread(target=run_bot_in_thread, args=(tok, proxy_url), daemon=True)
+        t.start()
+
+    # Run primary/last bot in main thread
+    run_bot_in_thread(tokens[-1], proxy_url)
 
 
 if __name__ == "__main__":

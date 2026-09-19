@@ -229,32 +229,6 @@ def map_po_to_main(raw_code):
     if mapped and mapped in MAIN_36_BRANCHES:
         return mapped
     
-    # If no mapping found, it might be an agent/showroom - check the category
-    try:
-        import pandas as pd
-        base_dirs = [
-            os.path.dirname(os.path.abspath(__file__)),
-            os.getcwd(),
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ]
-        lookup_file = None
-        for d in base_dirs:
-            p = os.path.join(d, "pickup_branch_lookup.csv")
-            if os.path.exists(p):
-                lookup_file = p
-                break
-        if lookup_file:
-            df = pd.read_csv(lookup_file, dtype=str)
-            row = df[df['Pickup Branch'].str.upper() == c]
-            if len(row) > 0:
-                category = str(row['Category'].iloc[0]).strip()
-                post_level = str(row['Post office level'].iloc[0]).strip()
-                if category in ('Agent', 'Showroom') or post_level in ('Agent', 'Showroom'):
-                    # This is an agent/showroom - should not be penalized
-                    return None
-    except:
-        pass
-    
     # Fallback to prefix matching only for actual post offices
     prefix = c[:3]
     for b in MAIN_36_BRANCHES:
@@ -275,7 +249,10 @@ def build_penalty_report(src_xlsx, out_xlsx, target_label="ALL", report_date=Non
       - Exact 9 Columns: No | Post Office | RIGHT Handover | RIGHT Delivery | Total Handover | Total Delivery | % RIGHT Handover | % RIGHT Delivery | Total Penalty ($)
     """
     os.makedirs(os.path.dirname(os.path.abspath(out_xlsx)), exist_ok=True)
-    df = pd.read_excel(src_xlsx)
+    try:
+        df = pd.read_excel(src_xlsx, engine='calamine')
+    except Exception:
+        df = pd.read_excel(src_xlsx)
     df.columns = [str(c).strip().upper() for c in df.columns]
 
     col_order = next((c for c in df.columns if 'ORDER ID' in c or 'ORDER' in c), 'ORDER ID')
@@ -573,63 +550,35 @@ def build_penalty_report(src_xlsx, out_xlsx, target_label="ALL", report_date=Non
                 print(f"    (The Post Office who has the package is responsible for handover delays)")
 
         is_return = sc in return_statuses
-        is_delivery = sc.startswith('4') and not is_return
+        is_delivery = sc.startswith('4') or sc in ('306', '309')
         is_handover = not (is_delivery or is_return)
 
-        if is_return:
-            # Return penalty goes to current Post Office (who has the package)
-            raw_po = curr_po
-            if not raw_po or raw_po in ('MEGA1', 'DVCMEGA1') or 'HUB' in raw_po:
-                for col in ['ACTION POST OFFICE.4', 'ACTION POST OFFICE.3', 'ACTION POST OFFICE.2', 'ACTION POST OFFICE.1', 'ACTION POST OFFICE']:
-                    cand = str(row.get(col, '') or '').strip().upper()
-                    if cand and cand not in ('NAN', 'MEGA1', 'DVCMEGA1') and 'HUB' not in cand:
-                        raw_po = cand
-                        break
-        elif is_delivery:
-            # Delivery penalty goes to delivery Post Office
-            raw_po = deliv_po
-        else:
-            # FIXED: Handover penalty should go to CURRENT Post Office (not sender!)
-            # The Post Office who currently has the package is responsible for handover delays
-            raw_po = curr_po
-            
-            if order_id in ('3204162498', '3304599288'):
-                print(f"    Initial raw_po (current): {raw_po}")
-                
-            if not raw_po or raw_po in ('MEGA1', 'DVCMEGA1') or 'HUB' in raw_po:
-                if order_id in ('3304599288',):
-                    print(f"    {raw_po} is a HUB/MEGA, looking for alternative...")
-                # If current PO is HUB/MEGA, find the last actual Post Office
-                for col in ['ACTION POST OFFICE.4', 'ACTION POST OFFICE.3', 'ACTION POST OFFICE.2', 'ACTION POST OFFICE.1', 'ACTION POST OFFICE']:
-                    cand = str(row.get(col, '') or '').strip().upper()
-                    if order_id in ('3304599288',):
-                        print(f"      Checking {col}: {cand}")
-                    if cand and cand not in ('NAN', 'MEGA1', 'DVCMEGA1') and 'HUB' not in cand:
-                        raw_po = cand
-                        if order_id in ('3304599288',):
-                            print(f"      Found alternative: {cand}")
-                        break
-                        
-                # If still no valid PO found, try delivery PO as last resort
-                if (not raw_po or raw_po in ('MEGA1', 'DVCMEGA1') or 'HUB' in raw_po) and deliv_po:
-                    if order_id in ('3304599288',):
-                        print(f"    No valid PO found, using delivery PO as fallback: {deliv_po}")
-                    raw_po = deliv_po
+        # UNIFORM RULE: Always attribute penalty to the LATEST SCANNED POST OFFICE
+        raw_po = ''
+        action_cols = [
+            'ACTION POST OFFICE.4',
+            'ACTION POST OFFICE.3',
+            'ACTION POST OFFICE.2',
+            'ACTION POST OFFICE.1',
+            'ACTION POST OFFICE',
+            'CURRENT POST OFFICE',
+            'DELIVERY POST OFFICE',
+            'RECEIVE POST OFFICE'
+        ]
+        for col in action_cols:
+            val = str(row.get(col, '') or '').strip().upper()
+            if val and val not in ('NAN', 'MEGA1', 'DVCMEGA1') and not any(h in val for h in ('HUB', 'DVCZ', 'DVCMEGA')):
+                raw_po = val
+                break
+
+        if not raw_po:
+            raw_po = str(row.get('CURRENT POST OFFICE', '') or '').strip().upper()
 
         if not raw_po or raw_po == 'NAN':
             continue
 
-        # EXCLUDE HUB/MEGA FACILITIES FROM PENALTIES - These are company infrastructure, not individual Post Offices
+        # Exclude only if resolved target PO itself is a HUB/MEGA infrastructure facility
         if any(hub_pattern in raw_po.upper() for hub_pattern in ['MEGA1', 'DVCMEGA', 'HUB', 'DVCZ']):
-            if order_id in ('3204556387', '3304599288'):
-                print(f"  [SKIP] SKIPPING penalty - {raw_po} is a HUB/MEGA facility (infrastructure, not Post Office)")
-            continue
-
-        # ALSO EXCLUDE when bill is CURRENTLY AT hub but trying to penalty previous Post Office
-        curr_po_clean = str(row.get('curr_po_clean', '')).strip().upper()
-        if any(hub_pattern in curr_po_clean for hub_pattern in ['MEGA1', 'DVCMEGA', 'HUB', 'DVCZ']):
-            if order_id in ('3204556387', '3304599288'):
-                print(f"  [SKIP] SKIPPING penalty - Bill currently at HUB {curr_po_clean} (company infrastructure issue)")
             continue
 
         po = map_po_to_main(raw_po)
@@ -737,7 +686,6 @@ def build_penalty_report(src_xlsx, out_xlsx, target_label="ALL", report_date=Non
                         has_customer_problem = True
                         is_excused = True
                         risk_level = f"Excluded - Customer Problem History ({status_code})"
-                        print(f"DEBUG: Excluding order {order_id} - found status {status_code} in column {col_name}")
                         break
                 if has_customer_problem:
                     break

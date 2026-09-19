@@ -878,7 +878,7 @@ async def edit_or_send_requester_text(
     return await send_requester_text(update, context, text, parse_mode=parse_mode)
 
 
-async def send_requester_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, photo):
+async def send_requester_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, photo, caption=None, parse_mode=None, **kwargs):
     chat_id = requester_chat_id(update)
     if chat_id is None:
         log.warning("Cannot send requester photo without a chat id.")
@@ -891,14 +891,14 @@ async def send_requester_photo(update: Update, context: ContextTypes.DEFAULT_TYP
         photo_copy = io.BytesIO(photo.getvalue())
 
     try:
-        await safe_api_call(context.bot.send_photo, chat_id=chat_id, photo=photo)
+        await safe_api_call(context.bot.send_photo, chat_id=chat_id, photo=photo, caption=caption, parse_mode=parse_mode, **kwargs)
         return True
     except Exception as e:
         log.warning("Could not send requester photo to %s: %s (trying send_document fallback)", chat_id, e)
         try:
             doc_buf = photo_copy if photo_copy else photo
             doc_name = getattr(photo, "name", "report_image.png") or "report_image.png"
-            await safe_api_call(context.bot.send_document, chat_id=chat_id, document=doc_buf, filename=doc_name)
+            await safe_api_call(context.bot.send_document, chat_id=chat_id, document=doc_buf, filename=doc_name, caption=caption, parse_mode=parse_mode, **kwargs)
             return True
         except Exception as e2:
             log.warning("Fallback send document failed: %s", e2)

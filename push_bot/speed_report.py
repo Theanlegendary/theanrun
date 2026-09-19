@@ -177,6 +177,62 @@ def get_tracking_trips(order_id, cfg=None):
     return []
 
 
+def batch_prefetch_tracking_trips(order_ids, cfg=None):
+    """Prefetch tracking trips for all candidate order IDs in parallel using ThreadPoolExecutor."""
+    if not order_ids:
+        return
+    needed = [str(oid).strip() for oid in order_ids if str(oid).strip() and str(oid).strip() not in _tracking_trips_cache]
+    if not needed:
+        return
+
+    token = None
+    if cfg and isinstance(cfg, dict):
+        token = cfg.get("api", {}).get("bearer_token")
+    if not token:
+        base_dirs = [
+            os.path.dirname(os.path.abspath(__file__)),
+            os.getcwd(),
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ]
+        for d in base_dirs:
+            cfg_p = os.path.join(d, "config.json")
+            if os.path.exists(cfg_p):
+                try:
+                    import json
+                    with open(cfg_p, "r", encoding="utf-8") as f:
+                        c = json.load(f)
+                    token = c.get("api", {}).get("bearer_token")
+                    if token:
+                        break
+                except Exception:
+                    pass
+
+    if not token:
+        for oid in needed:
+            _tracking_trips_cache[oid] = []
+        return
+
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    from concurrent.futures import ThreadPoolExecutor
+    import requests
+    session = requests.Session()
+    session.headers.update(headers)
+
+    def _fetch_one(oid):
+        try:
+            r = session.get("https://gw-express.metfone.com.kh/tms-tracking/api/v1/order-tracking", params={"order_id": oid}, timeout=5)
+            if r.status_code == 200:
+                trips = r.json().get("trackingTrips", [])
+                _tracking_trips_cache[oid] = trips
+                return
+        except Exception:
+            pass
+        _tracking_trips_cache[oid] = []
+
+    with ThreadPoolExecutor(max_workers=50) as ex:
+        list(ex.map(_fetch_one, needed))
+
+
 def find_po_arrival_time_from_trips(trips, po, action_user, deliv_time):
     """
     Find earliest arrival/processing scan (306, 309, 311, 400, 401, 402) at target branch 'po'
@@ -369,7 +425,10 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
     if preloaded_df is not None:
         df = preloaded_df.copy()
     else:
-        df = pd.read_excel(src_xlsx)
+        try:
+            df = pd.read_excel(src_xlsx, engine='calamine')
+        except Exception:
+            df = pd.read_excel(src_xlsx)
         df.columns = [str(c).strip() for c in df.columns]
 
     col_order = next((c for c in df.columns if 'ORDER ID' in c or 'ORDER' in c), 'ORDER ID')
@@ -551,6 +610,9 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
     base_rows = []
     r_idx = 1
 
+    cand_order_ids = [re.sub(r'\.0$', '', str(r.get(col_order, '')).strip().upper()) for r in delivered_df.to_dict('records') if r.get(col_order)]
+    batch_prefetch_tracking_trips(cand_order_ids)
+
     for row in delivered_df.to_dict('records'):
         deliv_po = str(row.get('deliv_po_clean', '')).strip()
         curr_po = str(row.get('curr_po_clean', '')).strip()
@@ -587,16 +649,22 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
         po_306_first = str(row.get(col_306_po_first, '') or '').strip().upper() if col_306_po_first else ""
         po_306_last = str(row.get(col_306_po_last, '') or '').strip().upper() if col_306_po_last else ""
 
-        # 1. If FIRST TIME arrival from hub was at THIS delivering branch (po), use it (anti-cheat against rapid re-scans)
-        if col_306_store_hub and pd.notna(row.get(col_306_store_hub)) and (not po_306_first or po_306_first == po):
-            t_start = parse_time(row.get(col_306_store_hub))
-        # 2. If parcel was redirected/forwarded from another branch (change address), use arrival at THIS branch (po)
-        elif col_306_store_last and pd.notna(row.get(col_306_store_last)) and (not po_306_last or po_306_last == po):
-            t_start = parse_time(row.get(col_306_store_last))
+        t_last = parse_time(row.get(col_306_store_last)) if col_306_store_last and pd.notna(row.get(col_306_store_last)) else None
+        t_hub = parse_time(row.get(col_306_store_hub)) if col_306_store_hub and pd.notna(row.get(col_306_store_hub)) else None
 
-        # 3. If arrival at THIS branch is not in the export columns (e.g. inter-branch transfer or po_306_first is from origin branch):
+        # 1. If last arrival scan occurred on the delivery date (e.g. handover to sub-post office/agent ROTA007), use it as local arrival:
+        if t_last and t410 and t_last.date() == t410.date() and (not po_306_last or po_306_last == po or po_306_first != po):
+            t_start = t_last
+        # 2. If FIRST TIME arrival from hub was at THIS delivering branch (po), use hub arrival:
+        elif t_hub and (not po_306_first or po_306_first == po):
+            t_start = t_hub
+        # 3. Otherwise fallback to last 306 store scan:
+        elif t_last and (not po_306_last or po_306_last == po):
+            t_start = t_last
+
+        # 3b. If arrival at THIS branch is not in the export columns (e.g. inter-branch transfer or po_306_first is from origin branch):
         # Query live tracking trips API to find the physical arrival/processing scan (306/309/311/402) at 'po' by the courier:
-        if is_delivered and (not t_start or (po_306_first and po_306_first != po)):
+        if is_delivered and (not t_start or (po_306_first and po_306_first != po and (not t_last or t_last.date() != t410.date()))):
             trips = get_tracking_trips(order_id)
             if trips:
                 t_trip = find_po_arrival_time_from_trips(trips, po, action_user_val, t410)

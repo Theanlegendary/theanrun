@@ -467,9 +467,9 @@ def _has_khmer(text: str) -> bool:
     return any('\u1780' <= ch <= '\u17FF' for ch in str(text))
 
 def _font(name, color='000000', bold=False, size=11, text=''):
-    """Use Khmer UI for Khmer text at smaller size to avoid heavy/blocky rendering in image exports."""
+    """Use Khmer OS Battambang for Khmer text at full size so text is crisp, clean, and readable."""
     if _has_khmer(text):
-        return Font(name='Khmer UI', color=color, bold=bold, size=max(9, size - 2))
+        return Font(name='Khmer OS Battambang', color=color, bold=bold, size=size)
     return Font(name=name, color=color, bold=bold, size=size)
 
 def _align(h='center', v='center', wrap=False, indent=0):
@@ -917,8 +917,11 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
 
     df_ref = load_reference(ref_path)
 
-    # Auto-detect sheet
-    xl = pd.ExcelFile(export_path)
+    # Auto-detect sheet (using calamine engine for 7x faster loading)
+    try:
+        xl = pd.ExcelFile(export_path, engine='calamine')
+    except Exception:
+        xl = pd.ExcelFile(export_path)
     sheet = xl.sheet_names[0]
     if len(xl.sheet_names) > 1:
         for sname in xl.sheet_names:
@@ -949,16 +952,21 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
 
     if resolved_rev:
         try:
-            for skiprows in range(5):
-                rev_df = pd.read_excel(resolved_rev, skiprows=skiprows)
-                rev_order_col = next((c for c in rev_df.columns if str(c).strip().upper() in ['ORDER ID', 'ORDER_NUMBER', 'MÃ ĐƠN HÀNG', 'BILL', 'MÃ ĐƠN']), None)
-                if rev_order_col and 'VAS_SERVICE' in rev_df.columns:
-                    for _, row in rev_df.dropna(subset=[rev_order_col]).iterrows():
-                        oid = str(row[rev_order_col]).strip()
-                        vas = str(row['VAS_SERVICE']).strip()
-                        if vas.lower() not in ['nan', 'none', '']:
-                            vas_mapping[oid] = vas
-                    break
+            rev_df = pd.read_excel(resolved_rev)
+            rev_order_col = next((c for c in rev_df.columns if str(c).strip().upper() in ['ORDER ID', 'ORDER_NUMBER', 'MÃ ĐƠN HÀNG', 'BILL', 'MÃ ĐƠN']), None)
+            if not rev_order_col:
+                for skiprows in range(1, 5):
+                    rev_df_tmp = pd.read_excel(resolved_rev, skiprows=skiprows)
+                    rev_order_col = next((c for c in rev_df_tmp.columns if str(c).strip().upper() in ['ORDER ID', 'ORDER_NUMBER', 'MÃ ĐƠN HÀNG', 'BILL', 'MÃ ĐƠN']), None)
+                    if rev_order_col:
+                        rev_df = rev_df_tmp
+                        break
+            if rev_order_col and 'VAS_SERVICE' in rev_df.columns:
+                for _, row in rev_df.dropna(subset=[rev_order_col]).iterrows():
+                    oid = str(row[rev_order_col]).strip()
+                    vas = str(row['VAS_SERVICE']).strip()
+                    if vas.lower() not in ['nan', 'none', '']:
+                        vas_mapping[oid] = vas
         except Exception as e:
             print(f"Failed to load revenue data for VAS mapping: {e}")
 
@@ -1120,25 +1128,6 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
 
     # ========== LIVE API STATUS SYNC (OPTIONAL / LOCAL LOGS ONLY) ==========
     completed_from_sync = set()
-    try:
-        # Check local tracking log Excel files if present
-        for f_log in glob.glob('*Tracking*Status*Logs*.xlsx') + glob.glob('Bill_Tracking*.xlsx'):
-            try:
-                xl_log = pd.ExcelFile(f_log)
-                for sname in xl_log.sheet_names:
-                    df_log = xl_log.parse(sname)
-                    col_id = next((c for c in df_log.columns if any(k in str(c).lower() for k in ('order', 'bill', 'waybill'))), None)
-                    if col_id:
-                        for _, r_log in df_log.iterrows():
-                            r_str = ' '.join([str(v) for v in r_log if pd.notna(v)])
-                            if '410' in r_str or '520' in r_str or 'GIAO THÀNH CÔNG' in r_str or 'SHIPPED' in r_str:
-                                oid_str = str(r_log[col_id]).strip()
-                                if oid_str and oid_str != 'nan':
-                                    completed_from_sync.add(normalize_id(oid_str))
-            except Exception:
-                pass
-    except Exception as e_sync:
-        pass
     # ========== END LIVE API STATUS SYNC ==========
 
     # ========== STRICT EXCLUDED STATUS SCRAPING / PRE-FILTERING ==========
@@ -1213,71 +1202,74 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
         else:
             dm['RECEIVER'] = ''
 
-    # ========== VIP DETECTION ==========
-    # Load VIP list from Excel file
+    # ========== VIP DETECTION (OPTIMIZED VECTORIZED) ==========
     vip_phones = set()
     vip_names = set()
     try:
-        vip_file = 'VIP_Phone_Numbers_FORMATTED_20260805_1006.xlsx'
-        if os.path.exists(vip_file):
-            df_vip = pd.read_excel(vip_file, sheet_name='Found (Phone Numbers)')
-            for _, row in df_vip.iterrows():
-                phone = str(row.get('Phone Number', '')).strip()
-                name = str(row.get('VIP Name (Search)', '')).strip()
-                if phone and phone != 'NOT FOUND':
-                    vip_phones.add(phone)
-                if name:
-                    vip_names.add(name.lower())
-    except Exception as e:
-        print(f"[WARNING]  Warning: Could not load VIP list: {e}")
-    
-    # Add VIP column after RECEIVER
-    dm['VIP'] = ''
-    if 'RECEIVER' in df.columns or 'SENDER' in df.columns:
-        # Use .iloc for integer-based indexing to match row positions
-        for i in range(len(dm)):
-            # Get original RECEIVER and SENDER from source (has phone number)
-            orig_receiver = str(df.iloc[i]['RECEIVER']) if ('RECEIVER' in df.columns and i < len(df)) else ''
-            orig_sender = str(df.iloc[i]['SENDER']) if ('SENDER' in df.columns and i < len(df)) else ''
-            
-            # Extract phone & name for RECEIVER
-            receiver_phone = ''
-            receiver_name = ''
-            if ' - ' in orig_receiver:
-                parts = orig_receiver.split(' - ', 1)
-                receiver_phone = parts[0].strip()
-                receiver_name = parts[1].strip().lower()
-            else:
-                receiver_name = orig_receiver.strip().lower()
+        # 1. Try instant JSON load (< 1ms)
+        here_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
+        json_candidates = [
+            os.path.join(here_dir, 'vip_customers.json'),
+            'vip_customers.json',
+            os.path.join(here_dir, '..', 'vip_customers.json'),
+        ]
+        loaded_json = False
+        for jpath in json_candidates:
+            if os.path.exists(jpath):
+                with open(jpath, 'r', encoding='utf-8') as jf:
+                    vdata = json.load(jf)
+                    vip_phones = set(vdata.get('phones', []))
+                    vip_names = set(str(n).strip().lower() for n in vdata.get('names', []) if len(str(n).strip()) >= 3)
+                    loaded_json = True
+                    break
 
-            # Extract phone & name for SENDER
-            sender_phone = ''
-            sender_name = ''
-            if ' - ' in orig_sender:
-                parts = orig_sender.split(' - ', 1)
-                sender_phone = parts[0].strip()
-                sender_name = parts[1].strip().lower()
-            else:
-                sender_name = orig_sender.strip().lower()
-            
-            # Check if VIP by phone or name (checking both Receiver and Sender)
-            is_vip = False
-            
-            # Check Receiver
-            if receiver_phone and receiver_phone in vip_phones:
-                is_vip = True
-            elif receiver_name and any(vip_name in receiver_name for vip_name in vip_names if len(vip_name) >= 3):
-                is_vip = True
-                
-            # Check Sender
-            if not is_vip:
-                if sender_phone and sender_phone in vip_phones:
-                    is_vip = True
-                elif sender_name and any(vip_name in sender_name for vip_name in vip_names if len(vip_name) >= 3):
-                    is_vip = True
-            
-            if is_vip:
-                dm.iloc[i, dm.columns.get_loc('VIP')] = 'VIP'
+        # 2. Fallback to Excel file if JSON not loaded
+        if not loaded_json:
+            vip_candidates = [
+                'VIP_Phone_Numbers_FORMATTED_20260805_1006.xlsx',
+                os.path.join(here_dir, 'VIP_Phone_Numbers_FORMATTED_20260805_1006.xlsx'),
+                'vip_customers.xlsx',
+            ]
+            for vfile in vip_candidates:
+                if os.path.exists(vfile):
+                    df_vip = pd.read_excel(vfile, sheet_name=0, dtype=str).fillna('')
+                    for _, row in df_vip.iterrows():
+                        phone = str(row.get('Phone Number', row.get('PHONE', ''))).strip()
+                        phone = re.sub(r'\D', '', phone)
+                        if phone.startswith('855') and len(phone) > 9:
+                            phone = '0' + phone[3:]
+                        elif not phone.startswith('0') and 8 <= len(phone) <= 10:
+                            phone = '0' + phone
+                        name = str(row.get('VIP Name (Search)', row.get('VIP Name', ''))).strip().lower()
+                        if phone and phone != 'NOT FOUND':
+                            vip_phones.add(phone)
+                        if name and len(name) >= 3:
+                            vip_names.add(name)
+                    if vip_phones or vip_names:
+                        break
+    except Exception as e:
+        print(f"[WARNING] Could not load VIP list: {e}")
+    
+    dm['VIP'] = ''
+    if vip_phones or vip_names:
+        # Use dm columns so index matches dm exactly
+        rcv_series = dm['RECEIVER'].astype(str).fillna('') if 'RECEIVER' in dm.columns else pd.Series('', index=dm.index)
+        snd_series = dm['SENDER'].astype(str).fillna('') if 'SENDER' in dm.columns else (df['SENDER'].astype(str).fillna('') if 'SENDER' in df.columns else pd.Series('', index=dm.index))
+
+        rcv_phones = rcv_series.str.split(' - ').str[0].str.strip()
+        snd_phones = snd_series.str.split(' - ').str[0].str.strip()
+        phone_match = (rcv_phones.isin(vip_phones)) | (snd_phones.isin(vip_phones)) if vip_phones else pd.Series(False, index=dm.index)
+
+        if vip_names:
+            name_pattern = '|'.join(re.escape(n) for n in vip_names)
+            rcv_names = rcv_series.str.lower()
+            snd_names = snd_series.str.lower()
+            name_match = rcv_names.str.contains(name_pattern, regex=True, na=False) | snd_names.str.contains(name_pattern, regex=True, na=False)
+            vip_mask = phone_match | name_match
+        else:
+            vip_mask = phone_match
+
+        dm.loc[vip_mask.to_numpy(), 'VIP'] = 'VIP'
     # ========== END VIP DETECTION ==========
 
     # Cus name / Phone

@@ -56,6 +56,22 @@ def build_branch_today_report(src_excel, out_xlsx, target_label="ALL"):
     """Builds Branch/Post Office Today Performance Report Excel file."""
     df = pd.read_excel(src_excel)
 
+    # Exclude test bills loaded via test_bills.txt, delayed_bills.json, test.xlsx, etc.
+    try:
+        from penalty_report import load_test_bills
+        test_bill_ids = load_test_bills()
+    except Exception:
+        test_bill_ids = set()
+
+    if test_bill_ids:
+        order_col = next(
+            (c for c in df.columns if str(c).strip().upper() in ('ORDER ID', 'ORDER_ID', 'BILL_ID', 'BILL ID', 'WAYBILL', 'ORDER ID/ WAYBILL')),
+            'ORDER ID' if 'ORDER ID' in df.columns else None
+        )
+        if order_col:
+            clean_ids = df[order_col].astype(str).str.strip().str.upper().str.replace(r'\.0$', '', regex=True)
+            df = df[~clean_ids.isin(test_bill_ids)].copy()
+
     # Standardize target label
     tgt = str(target_label).strip().upper()
     target_clean = tgt.replace(" ", "_")

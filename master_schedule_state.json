@@ -1,0 +1,33 @@
+{
+  "2026-09-15_penalty_1100": {
+    "run_time": "2026-09-15 11:41:01",
+    "status": "completed",
+    "name": "Inventory Penalty Report",
+    "sent_to_groups": 1,
+    "items": 296
+  },
+  "2026-09-15_pending_push_1400": {
+    "run_time": "2026-09-15 14:00:29",
+    "status": "completed",
+    "name": "Pending Bill Detail (Push Zone & Push)",
+    "command": "/push all"
+  },
+  "2026-09-15_speed_commission_1500": {
+    "run_time": "2026-09-15 15:44:36",
+    "status": "completed",
+    "name": "Commission & Speed SLA - Slot 2",
+    "command": "/speed all"
+  },
+  "2026-09-16_coming_shipment_0800": {
+    "run_time": "2026-09-16 08:00:23",
+    "status": "started",
+    "name": "Coming Shipment Report",
+    "command": "/tomorrow all"
+  },
+  "2026-09-16_pending_push_0830": {
+    "run_time": "2026-09-16 08:30:00",
+    "status": "started",
+    "name": "Pending Bill Detail (Push Zone & Push)",
+    "command": "/push all"
+  }
+}
