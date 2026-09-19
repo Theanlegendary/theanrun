@@ -236,7 +236,7 @@ def export_dvc_zone_pivot(tree, day_keys, out_path, extra_data=None):
 
     banner_font  = Font(name=fn, size=11, bold=True, color="FFFFFF")
     hdr_font     = Font(name=fn, size=10, bold=True, color="FFFFFF")
-    zone_hdr_fnt = Font(name=fn, size=10, bold=True, color="FFFFFF")
+    zone_hdr_fnt = Font(name=fn, size=13, bold=True, color="FFFFFF")
     handle_font  = Font(name=fn, size=10, bold=True, color="0F172A")
     data_font    = Font(name=fn, size=10, color="0F172A")
     blue_font    = Font(name=fn, size=10, color="1E40AF", bold=True)
@@ -361,7 +361,7 @@ def export_dvc_zone_pivot(tree, day_keys, out_path, extra_data=None):
         for c in range(1, urg_col + 1):
             ws.cell(r, c).fill = zone_hdr_fill
             ws.cell(r, c).border = cell_border
-        ws.row_dimensions[r].height = 24
+        ws.row_dimensions[r].height = 28
         r += 1
 
         zone_col_totals = defaultdict(int)
