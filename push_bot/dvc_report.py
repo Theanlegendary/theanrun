@@ -184,10 +184,10 @@ def build_dvc_zone_pivot(rows, target_zone=None, exclude_test=True, test_keyword
         if not act_date:
             act_date = today
 
-        # 14-day cutoff
+        # 14-day cutoff: clamp older bills into the earliest cutoff date so no bills are dropped from the pivot table
         cutoff_date = today - timedelta(days=14)
         if act_date < cutoff_date:
-            continue
+            act_date = cutoff_date
 
         key = (act_date.month, act_date.day)
         tree[zone_label][prov][key] += 1
