@@ -1126,13 +1126,13 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
     else:
         df['STATUS_CODE'] = ''
 
-    # ========== LIVE API STATUS SYNC (PURGE SHIPPED/DELIVERED BILLS) ==========
+    # ========== SHIPPED BILL FILTER (cache + status only, no live API to avoid timeouts) ==========
     try:
         from shipped_filter import filter_shipped_bills_from_df
-        df, removed_shipped = filter_shipped_bills_from_df(df, verify_live=True)
+        df, removed_shipped = filter_shipped_bills_from_df(df, verify_live=False)
     except Exception as e_shipped:
-        print(f"[GENERATE_REPORT] Warning: Live shipped verification error: {e_shipped}")
-    # ========== END LIVE API STATUS SYNC ==========
+        print(f"[GENERATE_REPORT] Warning: Shipped filter error: {e_shipped}")
+    # ========== END SHIPPED BILL FILTER ==========
 
     # ========== STRICT EXCLUDED STATUS SCRAPING / PRE-FILTERING ==========
     # Scrape all excluded/completed/420 status bills UPFRONT before report generation & comparison
@@ -1709,17 +1709,17 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
             overall[rn] = len(df_verify)
     
     if total_removed_final > 0:
-        print(f"  [FINAL VERIFICATION] ⚠️  WARNING: Found {total_removed_final} shipped bills that slipped through!")
+        print(f"  [FINAL VERIFICATION] WARNING: Found {total_removed_final} shipped bills that slipped through!")
         print(f"  [FINAL VERIFICATION] All shipped bills have been removed. Reports are now clean.")
         # Recalculate grand total
         grand_total = sum(overall.values())
         summary = "\n".join([
-            f"📋 Daily Report  {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+            f"Daily Report  {datetime.now().strftime('%d/%m/%Y %H:%M')}",
             f"Delivery: {overall.get('Delivery',0)}  |  Not Assign: {overall.get('Not Assign',0)}  |  Pickup: {overall.get('Pickup',0)}  |  Send Mega: {overall.get('Send Mega',0)}",
             f"Grand Total: {grand_total}",
         ])
     else:
-        print(f"  [FINAL VERIFICATION] ✅ No shipped bills found. All reports clean!")
+        print(f"  [FINAL VERIFICATION] OK - No shipped bills found. All reports clean!")
     # ========== END FINAL SAFETY VERIFICATION ==========
 
     result = {
