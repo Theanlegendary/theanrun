@@ -671,6 +671,7 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
 
     for row in delivered_df.to_dict('records'):
         curr_po = str(row.get('curr_po_clean', '') or row.get('raw_po_clean', '') or '').strip()
+        deliv_po = str(row.get('deliv_po_clean', '') or '').strip()
 
         if not curr_po or curr_po == 'NAN' or is_agent_or_showroom(curr_po):
             continue
