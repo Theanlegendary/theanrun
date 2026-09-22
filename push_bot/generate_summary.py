@@ -540,24 +540,33 @@ def build_summary_image(
             gt_cells.append(f"${g_cod:.2f}" if g_cod else "")
 
     # Add > 1 Day and > 3 Days to Grand Total
+    # ONLY sum handles that are actually shown in this image (not all branches)
+    shown_handles = {hr["handle"].upper() for hr in handle_results}
     if urgent_counts is not None:
         g_1day = 0
         g_3days = 0
-        for h_urgent in urgent_counts.values():
+        for h_key, h_urgent in urgent_counts.items():
+            if h_key.upper() not in shown_handles:
+                continue  # skip handles not in this image (e.g. provincial when showing PNP)
             if isinstance(h_urgent, dict):
                 g_1day += h_urgent.get("1day", 0)
                 g_3days += h_urgent.get("3days", 0)
             else:
-                # Backward compatibility
                 g_1day += h_urgent
-        
+
         gt_cells.append(str(g_1day) if g_1day else "")
         gt_cells.append(str(g_3days) if g_3days else "")
 
     gt_bgs = [C_TOTAL_BG] * n_cols
     if urgent_counts is not None:
-        g_1day = sum(u.get("1day", 0) if isinstance(u, dict) else u for u in urgent_counts.values())
-        g_3days = sum(u.get("3days", 0) if isinstance(u, dict) else 0 for u in urgent_counts.values())
+        g_1day = sum(
+            (v.get("1day", 0) if isinstance(v, dict) else v)
+            for k, v in urgent_counts.items() if k.upper() in shown_handles
+        )
+        g_3days = sum(
+            (v.get("3days", 0) if isinstance(v, dict) else 0)
+            for k, v in urgent_counts.items() if k.upper() in shown_handles
+        )
         if g_1day > 0 or g_3days > 0:
             gt_bgs[-2:] = [(255, 200, 200), (255, 200, 200)]  # Last 2 cells
 
