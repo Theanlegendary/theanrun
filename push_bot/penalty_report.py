@@ -151,6 +151,11 @@ def load_test_bills(cfg=None):
         tx_path = os.path.join(d, "test.xlsx")
         if os.path.exists(tx_path) and tx_path not in excel_paths:
             excel_paths.append(tx_path)
+        import glob
+        for pattern in ["ignored_test_bills*", "test_bills*"]:
+            for match in glob.glob(os.path.join(d, pattern)):
+                if match not in excel_paths and os.path.isfile(match):
+                    excel_paths.append(match)
 
     for ep in excel_paths:
         if os.path.exists(ep):
@@ -176,6 +181,12 @@ def load_test_bills(cfg=None):
                             test_ids.add(clean_val)
             except Exception:
                 pass
+
+    try:
+        from shipped_filter import load_confirmed_shipped_ids
+        test_ids.update(load_confirmed_shipped_ids())
+    except Exception:
+        pass
     
     return test_ids
 
@@ -398,6 +409,13 @@ def build_penalty_report(src_xlsx, out_xlsx, target_label="ALL", report_date=Non
     if col_status in active_df.columns:
         for kw in ['GIAO THÀNH CÔNG', 'DELIVERED', 'COMPLETED', 'ĐÃ GIAO', 'DA GIAO', 'RETURN COMPLETED']:
             active_df = active_df[~active_df[col_status].astype(str).str.upper().str.contains(kw, na=False)].copy()
+
+    # ── PURGE DELIVERED / SHIPPED BILLS (LIVE TRACKING CROSS-CHECK) ───────────
+    try:
+        from shipped_filter import filter_shipped_bills_from_df
+        active_df, removed_shipped = filter_shipped_bills_from_df(active_df, verify_live=True)
+    except Exception as e_shipped:
+        print(f"[PENALTY] Warning: Live shipped verification error: {e_shipped}")
 
     # EXCLUDE TEST BILLS - ULTRA COMPREHENSIVE FILTERING TO PREVENT ANY ISSUES
     test_keywords = [
@@ -668,27 +686,30 @@ def build_penalty_report(src_xlsx, out_xlsx, target_label="ALL", report_date=Non
         risk_level = "Normal"
         is_excused = False
 
-        # Check if bill has ever had customer problem statuses (472 or 420) in its history
-        customer_problem_statuses = {'472', '420'}  # Resolving Delivery Issue, Rescheduled by Customer
-        has_customer_problem = False
-        
-        # Check current status and ALL historical status columns (comprehensive search)
-        for col_name in row.index:
-            col_name_upper = str(col_name).upper()
-            # Check any column that might contain status codes
-            if any(keyword in col_name_upper for keyword in ['STATUS', 'SC', 'CODE']):
-                hist_status_raw = str(row.get(col_name, '')).strip()
-                # Extract numeric status code from various formats
-                import re
-                status_matches = re.findall(r'\b(\d{3})\b', hist_status_raw)
-                for status_code in status_matches:
-                    if status_code in customer_problem_statuses:
-                        has_customer_problem = True
-                        is_excused = True
-                        risk_level = f"Excluded - Customer Problem History ({status_code})"
+        # Check if bill has ever had customer problem statuses (420, 471, 472, 480) in its history or current status
+        customer_problem_statuses = {'420', '471', '472', '480'}  # Resolving Delivery Issue, Rescheduled, Failed Attempt
+        has_customer_problem = sc in customer_problem_statuses
+        matched_status_code = sc if has_customer_problem else None
+
+        if not has_customer_problem:
+            # Check current status and ALL historical status columns (comprehensive search)
+            for col_name in row.index:
+                col_name_upper = str(col_name).upper()
+                if any(keyword in col_name_upper for keyword in ['STATUS', 'SC', 'CODE', 'NOTE']):
+                    hist_status_raw = str(row.get(col_name, '')).strip()
+                    import re
+                    status_matches = re.findall(r'\b(\d{3})\b', hist_status_raw)
+                    for status_code in status_matches:
+                        if status_code in customer_problem_statuses:
+                            has_customer_problem = True
+                            matched_status_code = status_code
+                            break
+                    if has_customer_problem:
                         break
-                if has_customer_problem:
-                    break
+
+        if has_customer_problem:
+            is_excused = True
+            risk_level = f"Excluded - Customer Problem History ({matched_status_code})"
 
         if is_handover:
             summary_data[po]["total_handover"] += 1

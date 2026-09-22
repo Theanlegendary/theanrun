@@ -35,24 +35,24 @@ SUMMARY_HEADER_KHMER = {
 }
 
 # ── Palette ────────────────────────────────────────────────────────────────────
-C_TITLE_BG    = ( 10,  15,  35)   # near-black navy
+C_TITLE_BG    = ( 27,  54,  93)   # Executive Steel Navy (#1B365D)
 C_TITLE_FG    = (255, 255, 255)
-C_MONTH_BG    = ( 22,  34,  64)   # deep indigo for month row
-C_MONTH_FG    = (180, 200, 255)   # soft blue-white
-C_HEADER_BG   = ( 30,  45,  80)   # dark slate-blue
+C_MONTH_BG    = ( 15,  23,  42)   # Dark Slate Navy (#0F172A)
+C_MONTH_FG    = (224, 242, 254)   # Soft Ice Blue
+C_HEADER_BG   = ( 27,  54,  93)   # Executive Steel Navy (#1B365D)
 C_HEADER_FG   = (255, 255, 255)
-C_URGENT_HDR  = (180,  20,  20)   # dark red header for URGENT col
+C_URGENT_HDR  = (192,   0,   0)   # Executive Deep Red (#C00000)
 C_ROW_BG      = (255, 255, 255)
-C_ROW_ALT     = (245, 248, 255)   # very light blue stripe
-C_TOTAL_BG    = (232, 238, 250)   # soft blue-grey footer
-C_TOTAL_FG    = (200,  30,  30)   # strong red
-C_NUM_FG      = ( 30,  30, 160)   # deep blue for Pickup/Delivery/Pending counts
-C_PENDING_FG  = (180,  80,   0)   # amber for Pending counts
-C_DATE_FG     = ( 30,  30, 160)   # blue for date counts
-C_URGENT_FG   = (210,  30,  30)   # red for urgent counts
-C_HANDLE_FG   = ( 10,  15,  40)   # near-black for branch name
-C_BORDER      = (180, 195, 220)
-C_BORDER_DARK = ( 80, 100, 140)   # darker border for section separators
+C_ROW_ALT     = (248, 250, 252)   # Very light slate stripe
+C_TOTAL_BG    = (224, 242, 254)   # Soft Ice Blue (#E0F2FE)
+C_TOTAL_FG    = ( 15,  23,  42)   # Dark Navy
+C_NUM_FG      = ( 15,  23,  42)   # Dark Navy
+C_PENDING_FG  = ( 15,  23,  42)
+C_DATE_FG     = ( 15,  23,  42)
+C_URGENT_FG   = (192,   0,   0)   # Executive Red (#C00000)
+C_HANDLE_FG   = ( 15,  23,  42)   # Dark Navy
+C_BORDER      = (203, 213, 225)   # Light slate border (#CBD5E1)
+C_BORDER_DARK = ( 71,  85, 105)
 
 _WIN_FONTS = "C:/Windows/Fonts"
 
@@ -217,7 +217,7 @@ def build_summary_image(
         elif p3 in ["CHA", "KRA", "TBK", "ROT", "MON", "STU"]: return "Zone 5"
         return "Zone ?"
 
-    show_zone_col = bool(zone_label and ("ZONE" in zone_label.upper() or "ALL" in zone_label.upper()))
+    show_zone_col = False
 
     if show_zone_col:
         def _sort_key(hr):
@@ -394,8 +394,8 @@ def build_summary_image(
         handle   = hr["handle"]
         pickup   = counts.get("Pickup",   0)
         delivery = counts.get("Delivery", 0)
-        transit  = counts.get("Transit",  0)
-        branch   = counts.get("Branch",   0)
+        transit  = counts.get("Transit",  0) or counts.get("Send Mega", 0)
+        branch   = counts.get("Branch",   0) or counts.get("Not Assign", 0)
         total    = pickup + delivery + transit + branch
         urgent   = (urgent_counts or {}).get(handle, 0)
 
@@ -502,15 +502,15 @@ def build_summary_image(
              border_col=C_BORDER)
         y += ROW_H
 
-    # ── Grand Total row ───────────────────────────────────────────────────────
-    g_pickup   = overall.get("Pickup",   0) or sum(hr["handle_counts"].get("Pickup", 0) for hr in handle_results)
-    g_delivery = overall.get("Delivery", 0) or sum(hr["handle_counts"].get("Delivery", 0) for hr in handle_results)
-    g_transit  = overall.get("Transit",  0) or sum(hr["handle_counts"].get("Transit", 0) for hr in handle_results)
-    g_branch   = overall.get("Branch",   0) or sum(hr["handle_counts"].get("Branch", 0) for hr in handle_results)
+    # ── Total row ─────────────────────────────────────────────────────────────
+    g_pickup   = sum(hr["handle_counts"].get("Pickup", 0) for hr in handle_results)
+    g_delivery = sum(hr["handle_counts"].get("Delivery", 0) for hr in handle_results)
+    g_transit  = sum((hr["handle_counts"].get("Transit", 0) or hr["handle_counts"].get("Send Mega", 0)) for hr in handle_results)
+    g_branch   = sum((hr["handle_counts"].get("Branch", 0) or hr["handle_counts"].get("Not Assign", 0)) for hr in handle_results)
     g_total    = g_pickup + g_delivery + g_transit + g_branch
 
     gt_cells  = ([""] if show_zone_col else []) + [
-                 "GRAND TOTAL",
+                 "TOTAL",
                  str(g_pickup)   if g_pickup   else "",
                  str(g_delivery) if g_delivery else "",
                  str(g_transit)  if g_transit  else "",

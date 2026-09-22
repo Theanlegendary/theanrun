@@ -5,11 +5,13 @@ Generates CEO executive summary and audit dataset for all pending shipments
 across all branches, grouped by Branch, Facility Type (P, S, A), and Age (Days).
 Designed with the official CEO Executive Teal Table aesthetic and intuitive color tiers.
 
-Approved Statuses (16):
-- NOT ASSIGN / Branch (3): 306, 309, 400
-- DELIVERY (13): 401, 402, 420, 430, 460, 470, 471, 472, 480, 500, 510, 511, 512
+SIMPLIFIED - NO GRACE PERIOD LOGIC (like /penalty)
 
-Age Buckets:
+Approved Statuses (14):  # REMOVED 420 and 472
+- NOT ASSIGN / Branch (3): 306, 309, 400
+- DELIVERY (11): 401, 402, 430, 460, 470, 471, 480, 500, 510, 511, 512
+
+Age Buckets (ACTUAL HOURS - NO GRACE ADJUSTMENTS):
 - 0 Days:   0:00 -> 23:59 (< 24.0 hours)
 - 1 Day:   24:00 -> 47:59 (>= 24.0 and < 48.0 hours)
 - 2 Days:  48:00 -> 71:59 (>= 48.0 and < 72.0 hours)
@@ -19,9 +21,10 @@ Age Buckets:
 - > 7 Days: >= 168.0 and < 720.0 hours (> 7 Days and < 30 Days, limited to this month)
 - Over 30 Days: Excluded (>= 720.0 hours)
 
-Special Aging Rules:
-- Status 420: +1 Day allowance / grace period (-24 hours off aging, e.g. 2 days counts as 1 day)
-- Status 472: +2 Days allowance / grace period (-48 hours off aging, e.g. 3 days counts as 1 day)
+NO MORE:
+- No status 420/472 grace period
+- No checking tracking history logs
+- Uses actual aging hours directly (cleaner and faster like /penalty)
 """
 
 import os
@@ -41,7 +44,8 @@ import excel_to_image
 
 APPROVED_STATUSES = {
     '306', '309', '400',
-    '401', '402', '420', '430', '460', '470', '471', '472', '480', '500', '510', '511', '512'
+    '401', '402', '430', '460', '470', '471', '480', '500', '510', '511', '512'
+    # REMOVED: '420', '472' - no longer check these statuses or their history
 }
 
 FACILITY_COLS = ['Servicepoint', 'Showroom', 'Agent']
@@ -87,62 +91,17 @@ def get_facility_type(po_code: str) -> str:
             return 'Servicepoint'
     return 'Servicepoint'
 
+# REMOVED - No longer needed (no grace period logic)
+# def fetch_pending_history_allowances(order_ids: list[str], bearer_token: str = None) -> dict[str, dict[str, bool]]:
 
-def fetch_pending_history_allowances(order_ids: list[str], bearer_token: str = None) -> dict[str, dict[str, bool]]:
-    """
-    Check real-time tracking trips for candidate pending bills (>= 24h old).
-    Returns a mapping of order_id -> {'has_420': bool, 'has_472': bool}
-    indicating whether status 420 or 472 appeared anywhere in the tracking history log.
-    """
-    if not order_ids:
-        return {}
-
-    if not bearer_token:
-        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-        if os.path.exists(cfg_path):
-            try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                    bearer_token = cfg.get("api", {}).get("bearer_token")
-            except Exception:
-                pass
-
-    if not bearer_token:
-        return {}
-
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "x-client-id": "TMS_ANDROID",
-        "User-Agent": "Mozilla/5.0"
-    }
-    session = requests.Session()
-    session.headers.update(headers)
-
-    def _check_one(oid: str):
-        try:
-            r = session.get(
-                "https://gw-express.metfone.com.kh/tms-tracking/api/v1/order-tracking",
-                params={"order_id": oid},
-                timeout=5
-            )
-            if r.status_code == 200:
-                trips = r.json().get("trackingTrips", [])
-                hist = {str(t.get("status", "")).lstrip("S").strip() for t in trips}
-                has_420 = "420" in hist
-                has_472 = "472" in hist
-                if has_420 or has_472:
-                    return oid, has_420, has_472
-        except Exception:
-            pass
-        return oid, False, False
-
-    history_map = {}
-    with ThreadPoolExecutor(max_workers=50) as ex:
-        for oid, has_420, has_472 in ex.map(_check_one, order_ids):
-            if has_420 or has_472:
-                history_map[oid] = {"has_420": has_420, "has_472": has_472}
-
-    return history_map
+# REMOVED - No longer needed (no grace period logic)
+# def fetch_pending_history_allowances(order_ids: list[str], bearer_token: str = None) -> dict[str, dict[str, bool]]:
+#     """
+#     Check real-time tracking trips for candidate pending bills (>= 24h old).
+#     Returns a mapping of order_id -> {'has_420': bool, 'has_472': bool}
+#     indicating whether status 420 or 472 appeared anywhere in the tracking history log.
+#     """
+#     [FUNCTION REMOVED - No longer checking history for 420/472]
 
 
 def process_pending_data(src_path_or_df):
@@ -202,6 +161,13 @@ def process_pending_data(src_path_or_df):
     is_hub = df_p['CURRENT POST OFFICE'].astype(str).str.contains('MEGA|HUB|DVC', case=False, na=False)
     df_branch = df_p[~is_hub].copy()
 
+    # ── PURGE DELIVERED / SHIPPED BILLS (LIVE TRACKING CROSS-CHECK) ───────────
+    try:
+        from shipped_filter import filter_shipped_bills_from_df
+        df_branch, removed_shipped = filter_shipped_bills_from_df(df_branch, verify_live=True)
+    except Exception as e_shipped:
+        print(f"[TOTAL_PENDING] Warning: Live shipped verification error: {e_shipped}")
+
     df_branch['Branch'] = df_branch['CURRENT POST OFFICE'].apply(get_branch_code)
     df_branch['Facility_Type'] = df_branch['CURRENT POST OFFICE'].apply(get_facility_type)
 
@@ -230,34 +196,14 @@ def process_pending_data(src_path_or_df):
     df_branch['History_Timestamp'] = ts_df[0]
     df_branch['Actual_Hours'] = ts_df[1]
 
-    # Check tracking history log for bills >= 24h
-    cand_orders = df_branch[df_branch['Actual_Hours'] >= 24.0]['ORDER ID'].dropna().astype(str).unique().tolist()
-    history_map = fetch_pending_history_allowances(cand_orders)
-
+    # NO MORE GRACE PERIOD OR HISTORY CHECKING - SIMPLIFIED LIKE /PENALTY
     def _calc_aging_bucket(row):
         actual_hours = row['Actual_Hours']
-        sc_val = str(row.get('STATUS_CODE', '')).strip()
-        oid = str(row.get('ORDER ID', '')).strip()
-        h_info = history_map.get(oid, {})
+        
+        # NO GRACE ADJUSTMENTS - USE ACTUAL HOURS DIRECTLY
+        adjusted_hours = actual_hours
 
-        has_420 = (sc_val == '420') or h_info.get('has_420', False)
-        has_472 = (sc_val == '472') or h_info.get('has_472', False)
-
-        grace = 0.0
-        grace_note = ''
-        if has_472 and has_420:
-            grace = 48.0
-            grace_note = '+2D Grace (472/420 History)'
-        elif has_472:
-            grace = 48.0
-            grace_note = '+2D Grace (472)' if sc_val == '472' else '+2D Grace (472 in History)'
-        elif has_420:
-            grace = 24.0
-            grace_note = '+1D Grace (420)' if sc_val == '420' else '+1D Grace (420 in History)'
-
-        adjusted_hours = max(0.0, actual_hours - grace)
-
-        # Bucket classification:
+        # Bucket classification based on ACTUAL hours (no grace deductions)
         if adjusted_hours >= 720.0:
             bucket = 'EXCLUDED_OVER_30'
         elif adjusted_hours < 24.0:
@@ -275,12 +221,12 @@ def process_pending_data(src_path_or_df):
         else:
             bucket = '> 7 Days'
 
-        return pd.Series([round(adjusted_hours, 1), bucket, grace_note])
+        return pd.Series([round(adjusted_hours, 1), bucket])  # Only return hours and bucket
 
     aging_df = df_branch.apply(_calc_aging_bucket, axis=1)
     df_branch['Adjusted_Hours'] = aging_df[0]
     df_branch['Age_Bucket'] = aging_df[1]
-    df_branch['Grace_Note'] = aging_df[2]
+    # REMOVED: Grace_Note column completely - no longer needed
 
     # Exclude orders >= 30 days (older than 30 days / not in this month)
     df_branch = df_branch[df_branch['Age_Bucket'] != 'EXCLUDED_OVER_30'].copy()
@@ -488,7 +434,7 @@ def export_total_pending_excel(summary_df, grand_total, df_detail, out_xlsx_path
         ('Actual Hours', 14),
         ('Adjusted Hours', 15),
         ('Age Bucket', 14),
-        ('Grace Note', 22),
+        # REMOVED: ('Grace Note', 22) - No longer needed (no grace logic)
         ('Sender', 25),
         ('Receiver', 25),
         ('Phone', 16),
@@ -519,11 +465,11 @@ def export_total_pending_excel(summary_df, grand_total, df_detail, out_xlsx_path
         ws_det.cell(row=det_row, column=9, value=item.get('Actual_Hours', 0.0)).alignment = Alignment(horizontal='right')
         ws_det.cell(row=det_row, column=10, value=item.get('Adjusted_Hours', 0.0)).alignment = Alignment(horizontal='right')
         ws_det.cell(row=det_row, column=11, value=str(item.get('Age_Bucket', ''))).alignment = Alignment(horizontal='center')
-        ws_det.cell(row=det_row, column=12, value=str(item.get('Grace_Note', ''))).alignment = Alignment(horizontal='center')
-        ws_det.cell(row=det_row, column=13, value=str(item.get('SENDER', ''))).alignment = Alignment(horizontal='left')
-        ws_det.cell(row=det_row, column=14, value=str(item.get('RECEIVER', ''))).alignment = Alignment(horizontal='left')
-        ws_det.cell(row=det_row, column=15, value=str(item.get('Phone', item.get('PHONE', '')))).alignment = Alignment(horizontal='center')
-        ws_det.cell(row=det_row, column=16, value=str(item.get('DELIVERY POST OFFICE', ''))).alignment = Alignment(horizontal='center')
+        # REMOVED: Grace_Note column (column 12) - No longer needed
+        ws_det.cell(row=det_row, column=12, value=str(item.get('SENDER', ''))).alignment = Alignment(horizontal='left')
+        ws_det.cell(row=det_row, column=13, value=str(item.get('RECEIVER', ''))).alignment = Alignment(horizontal='left')
+        ws_det.cell(row=det_row, column=14, value=str(item.get('Phone', item.get('PHONE', '')))).alignment = Alignment(horizontal='center')
+        ws_det.cell(row=det_row, column=15, value=str(item.get('DELIVERY POST OFFICE', ''))).alignment = Alignment(horizontal='center')
 
         data_font = Font(name="Arial", size=10, color="000000")
         for col_i in range(1, len(detail_cols) + 1):
@@ -564,19 +510,38 @@ def render_total_pending_image(summary_df, grand_total, out_png_path=None, df_de
 
 
 def format_pending_text_summary(summary_df, grand_total, target_date=None):
-    """Formats markdown caption for scheduled or interactive Total Pending reports."""
+    """Formats markdown caption for scheduled or interactive Total Pending reports matching official detail view."""
     if target_date is None:
         target_date = datetime.now()
     stamp_str = target_date.strftime("%d/%m/%Y %H:%M")
-    total_delayed = 0
-    if DELAY_COL_NAME in summary_df.columns:
-        total_delayed = int(summary_df[DELAY_COL_NAME].sum())
+
+    total_val = grand_total.get("Total", 0) if isinstance(grand_total, dict) else (grand_total or 0)
+    sp_val = grand_total.get("Servicepoint", 0) if isinstance(grand_total, dict) else 0
+    sr_val = grand_total.get("Showroom", 0) if isinstance(grand_total, dict) else 0
+    ag_val = grand_total.get("Agent", 0) if isinstance(grand_total, dict) else 0
+    delay_val = grand_total.get(DELAY_COL_NAME, grand_total.get("Total >= 3 Days", 0)) if isinstance(grand_total, dict) else 0
+
+    if delay_val == 0 and summary_df is not None and not summary_df.empty:
+        if DELAY_COL_NAME in summary_df.columns:
+            delay_val = int(summary_df[DELAY_COL_NAME].sum())
+
     lines = [
-        f"📋 *TOTAL PENDING REPORT* — {stamp_str}",
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        f"📦 *Total Pending Orders:* `{grand_total:,}`",
-        f"⚠️ *Delayed (≥ 3 Days):* `{total_delayed:,}`",
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"TOTAL PENDING REPORT — {stamp_str}",
+        f"",
+        f"Total Pending: {total_val:,}",
+        f"Servicepoint: {sp_val:,} | Showroom: {sr_val:,} | Agent: {ag_val:,}",
+        f"Total Delay (>= 3 Days): {delay_val:,}",
     ]
+
+    if summary_df is not None and not summary_df.empty and 'Branch' in summary_df.columns and 'Total' in summary_df.columns:
+        lines.append("")
+        lines.append("Top 10 Pending Branches:")
+        top10 = summary_df.sort_values(by='Total', ascending=False).head(10)
+        for idx, (_, row) in enumerate(top10.iterrows(), 1):
+            b_code = str(row['Branch'])
+            b_tot = int(row['Total'])
+            b_delay = int(row.get(DELAY_COL_NAME, row.get('Total >= 3 Days', 0)))
+            lines.append(f"{idx}. {b_code}: {b_tot:,} (>=3D: {b_delay:,})")
+
     return "\n".join(lines)
 

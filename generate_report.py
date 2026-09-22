@@ -1126,29 +1126,42 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
     else:
         df['STATUS_CODE'] = ''
 
-    # ========== LIVE API STATUS SYNC (OPTIONAL / LOCAL LOGS ONLY) ==========
-    completed_from_sync = set()
+    # ========== LIVE API STATUS SYNC (PURGE SHIPPED/DELIVERED BILLS) ==========
+    try:
+        from shipped_filter import filter_shipped_bills_from_df
+        df, removed_shipped = filter_shipped_bills_from_df(df, verify_live=True)
+    except Exception as e_shipped:
+        print(f"[GENERATE_REPORT] Warning: Live shipped verification error: {e_shipped}")
     # ========== END LIVE API STATUS SYNC ==========
 
     # ========== STRICT EXCLUDED STATUS SCRAPING / PRE-FILTERING ==========
-    # Scrape all excluded/completed status bills UPFRONT before report generation & comparison
-    excluded_codes = {'99', '100', '201', '410', '520'}
-    excluded_keywords = ['410', '520', 'GIAO THÀNH CÔNG', 'DELIVERED', 'COMPLETED', 'ĐÃ GIAO', 'DA GIAO', 'RETURN COMPLETED']
+    # Scrape all excluded/completed/420 status bills UPFRONT before report generation & comparison
+    excluded_codes = {'99', '100', '201', '410', '420', '520'}
+    excluded_keywords = ['410', '420', '520', 'GIAO THÀNH CÔNG', 'DELIVERED', 'COMPLETED', 'ĐÃ GIAO', 'DA GIAO', 'RETURN COMPLETED', 'FINISH', 'SUCCESS', 'HẸN GIAO LẠI', 'HEN GIAO LAI']
     
+    # AGGRESSIVE FILTERING - Check both STATUS_CODE and CURRENT STATUS
     if 'STATUS_CODE' in df.columns:
         sc_mask = df['STATUS_CODE'].astype(str).str.strip().isin(excluded_codes)
         df = df[~sc_mask].copy()
+        print(f"  [FILTER] Removed {sc_mask.sum()} bills by STATUS_CODE filter")
 
     if 'CURRENT STATUS' in df.columns:
         st_text = df['CURRENT STATUS'].astype(str).str.upper()
+        # Check if CURRENT STATUS starts with excluded codes (handles "410 - Delivered", "420 - Hen giao lai")
+        starts_with_excluded = st_text.str.match(r'^(99|100|201|410|420|520)\b')
+        df = df[~starts_with_excluded].copy()
+        print(f"  [FILTER] Removed {starts_with_excluded.sum()} bills by CURRENT STATUS code prefix")
+        
+        # Then check keywords
+        keyword_mask = pd.Series([False] * len(df), index=df.index)
         for kw in excluded_keywords:
-            df = df[~st_text.str.contains(kw.upper(), na=False)].copy()
+            keyword_mask |= st_text.str.contains(kw.upper(), na=False)
+        df = df[~keyword_mask].copy()
+        print(f"  [FILTER] Removed {keyword_mask.sum()} bills by CURRENT STATUS keywords")
 
-    if completed_from_sync and 'ORDER ID' in df.columns:
-        df['_oid_norm'] = df['ORDER ID'].apply(normalize_id)
-        df = df[~df['_oid_norm'].isin(completed_from_sync)].copy()
-        if '_oid_norm' in df.columns:
-            df.drop(columns=['_oid_norm'], inplace=True, errors='ignore')
+    # (shipped bills already removed above via filter_shipped_bills_from_df)
+    
+    print(f"  [FILTER] Total bills after filtering: {len(df)}")
     # ========== END STRICT EXCLUDED STATUS SCRAPING ==========
 
     if 'CURRENT POST OFFICE' in df.columns:
@@ -1343,10 +1356,35 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
         for sc in r.get("status_codes", []):
             status_map[str(sc).strip()] = label
 
-    # Globally drop completed/done statuses from all reports
+    # Globally drop completed/done statuses from all reports (SECOND SAFETY CHECK)
     dm_all = dm.copy()  # Keep full data for dashboard (includes completed)
     if 'STATUS_CODE' in dm.columns:
-        dm = dm[~dm['STATUS_CODE'].isin(['99', '100', '410', '201', '520'])].copy()
+        before_count = len(dm)
+        dm = dm[~dm['STATUS_CODE'].isin(['99', '100', '410', '420', '201', '520'])].copy()
+        removed = before_count - len(dm)
+        if removed > 0:
+            print(f"  [SECOND FILTER] Removed {removed} completed/420 bills (STATUS_CODE check)")
+    
+    # ALSO check CURRENT STATUS text for shipped/delivered/420
+    if 'CURRENT STATUS' in dm.columns:
+        before_count = len(dm)
+        st_upper = dm['CURRENT STATUS'].astype(str).str.upper()
+        shipped_mask = (
+            st_upper.str.contains('410', na=False) |
+            st_upper.str.contains('420', na=False) |
+            st_upper.str.contains('201', na=False) |
+            st_upper.str.contains('GIAO THÀNH CÔNG', na=False) |
+            st_upper.str.contains('DELIVERED', na=False) |
+            st_upper.str.contains('COMPLETED', na=False) |
+            st_upper.str.contains('FINISH', na=False) |
+            st_upper.str.contains('SUCCESS', na=False) |
+            st_upper.str.contains('SHIPPED', na=False) |
+            st_upper.str.match(r'^(99|100|201|410|420|520)\s', na=False)  # Starts with excluded codes
+        )
+        dm = dm[~shipped_mask].copy()
+        removed = before_count - len(dm)
+        if removed > 0:
+            print(f"  [SECOND FILTER] Removed {removed} completed/420 bills (CURRENT STATUS check)")
 
     # Normalise Fee/COD columns if present
     fee_col_raw = next((c for c in dm.columns if 'TOTAL FEE' in c.upper()), None)
@@ -1631,6 +1669,58 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
         f"Delivery: {overall.get('Delivery',0)}  |  Not Assign: {overall.get('Not Assign',0)}  |  Pickup: {overall.get('Pickup',0)}  |  Send Mega: {overall.get('Send Mega',0)}",
         f"Grand Total: {grand_total}",
     ])
+
+    # ========== THIRD LAYER: FINAL SAFETY VERIFICATION ==========
+    # Final check to ensure NO shipped/completed bills in type_data
+    # This is a last line of defense to catch any bills that somehow slipped through
+    print(f"\n  [FINAL VERIFICATION] Checking for any shipped bills that slipped through...")
+    total_removed_final = 0
+    for rn in ALL_TABS:
+        if rn not in type_data or type_data[rn].empty:
+            continue
+        df_verify = type_data[rn]
+        before = len(df_verify)
+        
+        # Check STATUS_CODE
+        if 'STATUS_CODE' in df_verify.columns:
+            df_verify = df_verify[~df_verify['STATUS_CODE'].isin(['99', '100', '410', '201', '520'])].copy()
+        
+        # Check CURRENT STATUS text
+        if 'CURRENT STATUS' in df_verify.columns:
+            st_check = df_verify['CURRENT STATUS'].astype(str).str.upper()
+            shipped_check = (
+                st_check.str.contains('410', na=False) |
+                st_check.str.contains('201', na=False) |
+                st_check.str.contains('DELIVERED', na=False) |
+                st_check.str.contains('COMPLETED', na=False) |
+                st_check.str.contains('SHIPPED', na=False) |
+                st_check.str.contains('FINISH', na=False) |
+                st_check.str.contains('SUCCESS', na=False) |
+                st_check.str.contains('GIAO THÀNH CÔNG', na=False)
+            )
+            df_verify = df_verify[~shipped_check].copy()
+        
+        removed = before - len(df_verify)
+        if removed > 0:
+            print(f"  [FINAL VERIFICATION] Removed {removed} shipped bills from {rn} tab")
+            total_removed_final += removed
+            type_data[rn] = df_verify
+            # Recalculate overall counts
+            overall[rn] = len(df_verify)
+    
+    if total_removed_final > 0:
+        print(f"  [FINAL VERIFICATION] ⚠️  WARNING: Found {total_removed_final} shipped bills that slipped through!")
+        print(f"  [FINAL VERIFICATION] All shipped bills have been removed. Reports are now clean.")
+        # Recalculate grand total
+        grand_total = sum(overall.values())
+        summary = "\n".join([
+            f"📋 Daily Report  {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+            f"Delivery: {overall.get('Delivery',0)}  |  Not Assign: {overall.get('Not Assign',0)}  |  Pickup: {overall.get('Pickup',0)}  |  Send Mega: {overall.get('Send Mega',0)}",
+            f"Grand Total: {grand_total}",
+        ])
+    else:
+        print(f"  [FINAL VERIFICATION] ✅ No shipped bills found. All reports clean!")
+    # ========== END FINAL SAFETY VERIFICATION ==========
 
     result = {
         'handle_results':   handle_results,

@@ -8,14 +8,14 @@ def create_ceo_executive_table(ws, start_row, start_col, title, headers, data_ro
     """Create a professional CEO-style table with teal header"""
     
     # Define styles matching CEO table design
-    header_fill = PatternFill(start_color="2E8B8B", end_color="2E8B8B", fill_type="solid")  # Teal
-    total_fill = PatternFill(start_color="B8E6E6", end_color="B8E6E6", fill_type="solid")   # Light teal
+    header_fill = PatternFill(start_color="0E7569", end_color="0E7569", fill_type="solid")  # Executive Teal
+    total_fill = PatternFill(start_color="C4F4EB", end_color="C4F4EB", fill_type="solid")   # Mint Teal
     white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")   # White
     
-    header_font = Font(name="Arial", size=10, bold=True, color="FFFFFF")  # White text
-    data_font = Font(name="Arial", size=10, color="000000")               # Black text
-    total_font = Font(name="Arial", size=11, bold=True, color="000000")   # Bold black
-    title_font = Font(name="Arial", size=12, bold=True, color="FFFFFF")   # White title
+    header_font = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")  # White text
+    data_font = Font(name="Segoe UI", size=10, color="0F172A")               # Black text
+    total_font = Font(name="Segoe UI", size=11, bold=True, color="0F172A")   # Bold black
+    title_font = Font(name="Segoe UI", size=12, bold=True, color="FFFFFF")   # White title
     
     center_align = Alignment(horizontal="center", vertical="center")
     left_align = Alignment(horizontal="left", vertical="center") 
@@ -793,12 +793,12 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
 
     # Executive CEO Color Palette (Subtle, High-Contrast, Professional)
     fill_title_left  = PatternFill("solid", fgColor="0F172A") # Deep Slate Navy
-    fill_title_right = PatternFill("solid", fgColor="0F766E") # Deep Teal Slate
+    fill_title_right = PatternFill("solid", fgColor="0E7569") # Executive Deep Teal
     fill_hdr_left    = PatternFill("solid", fgColor="1E293B") # Executive Navy Slate
-    fill_hdr_right   = PatternFill("solid", fgColor="0F766E") # Deep Teal Slate
+    fill_hdr_right   = PatternFill("solid", fgColor="0E7569") # Executive Deep Teal
     fill_row_alt     = PatternFill("solid", fgColor="F8FAFC") # Subtle Zebra Tint
     fill_left_tot    = PatternFill("solid", fgColor="CBD5E1") # Refined Slate Grey Total
-    fill_sum_tot     = PatternFill("solid", fgColor="CCFBF1") # Refined Soft Teal Total
+    fill_sum_tot     = PatternFill("solid", fgColor="C4F4EB") # Executive Soft Mint Teal Total
 
     border_clean = Border(
         left=Side(style="thin", color="E2E8F0"),
@@ -812,7 +812,7 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
         left=Side(style="thin", color="CBD5E1"),
         right=Side(style="thin", color="CBD5E1"),
         top=Side(style="thin", color="64748B"),
-        bottom=Side(style="double", color="0F172A") # Executive Double Line
+        bottom=Side(style="double", color="0E7569") # Executive Teal Double Line
     )
 
     font_banner = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
@@ -820,7 +820,7 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
     font_data   = Font(name="Segoe UI", size=9,  color="0F172A")
     font_data_b = Font(name="Segoe UI", size=9,  bold=True, color="0F172A")
     font_tot    = Font(name="Segoe UI", size=10, bold=True, color="0F172A")
-    font_tot_red= Font(name="Segoe UI", size=10, bold=True, color="991B1B")
+    font_tot_red= Font(name="Segoe UI", size=10, bold=True, color="C00000")
 
     # Row 1: Title Banners (Height 36)
     stamp_date = datetime.now().strftime("%d.%m")
@@ -834,10 +834,10 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
     for c in range(1, 9):
         ws1.cell(1, c).fill = fill_title_left
 
-    ws1.merge_cells("J1:N1")
+    ws1.merge_cells("J1:M1")
     ws1.cell(1, 10, title_right_txt).font = font_banner
     ws1.cell(1, 10).alignment = Alignment(horizontal="center", vertical="center")
-    for c in range(10, 15):
+    for c in range(10, 14):
         ws1.cell(1, c).fill = fill_title_right
 
     ws1.row_dimensions[1].height = 36.0
@@ -856,9 +856,8 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
     is_zone_summary = ("ZONE" in target_clean or target_clean in ("ALL", "TOTAL", "ZON"))
 
     headers_right = [
-        "ZONE\n(តំបន់)",
         "DESTINATION_BRANCH\n(សាខា)",
-        "" if is_zone_summary else "District\n(ស្រុក/ខណ្ឌ)",
+        "",
         "Bill\n(ចំនួនប័ណ្ណ)",
         "SUM ACTUAL_WEIGHT (G)\n(ទម្ងន់សរុប g)"
     ]
@@ -878,8 +877,7 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = border_clean
 
-    if is_zone_summary:
-        ws1.merge_cells(start_row=2, start_column=11, end_row=2, end_column=12)
+    ws1.merge_cells(start_row=2, start_column=10, end_row=2, end_column=11)
 
     # Populate Left Data Rows (Single pure white background for all data rows)
     summary_data = {}
@@ -904,7 +902,6 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
             cell = ws1.cell(r_curr, ci, val)
             cell.font = font_data_b if ci == 1 else font_data
             cell.border = border_clean
-
 
             if ci in (1, 2, 3, 4):
                 cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -946,7 +943,7 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
         cell.fill = fill_left_tot
         cell.border = tot_border_accounting
 
-    # Populate Executive Summary Table on Right with Province/Branch Subtotals
+    # Populate Executive Summary Table on Right with Province/Branch Totals
     r_sum = 3
     branch_groups = {}
     for (zone_str, br, dist), stats in sorted(summary_data.items()):
@@ -962,107 +959,57 @@ def build_shipments_tomorrow_report(src_xlsx, out_xlsx, target_label="Zone 1"):
         right=Side(style="thin", color="E2E8F0")
     )
 
-    if is_zone_summary:
-        for br in sorted(branch_groups.keys()):
-            br_items = branch_groups[br]
-            br_bills = sum(stats["bills"] for _, _, _, stats in br_items)
-            br_weight = sum(stats["weight"] for _, _, _, stats in br_items)
-            zone_str = br_items[0][0] if br_items else target_clean
+    for br in sorted(branch_groups.keys()):
+        br_items = branch_groups[br]
+        br_bills = sum(stats["bills"] for _, _, _, stats in br_items)
+        br_weight = sum(stats["weight"] for _, _, _, stats in br_items)
 
-            ws1.row_dimensions[r_sum].height = 22.0
-            ws1.merge_cells(start_row=r_sum, start_column=11, end_row=r_sum, end_column=12)
+        ws1.row_dimensions[r_sum].height = 22.0
+        ws1.merge_cells(start_row=r_sum, start_column=10, end_row=r_sum, end_column=11)
 
-            z_cell = ws1.cell(r_sum, 10, zone_str)
-            z_cell.alignment = Alignment(horizontal="center", vertical="center")
+        b_name_cell = ws1.cell(r_sum, 10, br)
+        b_name_cell.alignment = Alignment(horizontal="left", vertical="center")
+        b_name_cell.font = font_data_b
 
-            b_name_cell = ws1.cell(r_sum, 11, br)
-            b_name_cell.alignment = Alignment(horizontal="left", vertical="center")
+        b_cell = ws1.cell(r_sum, 12, br_bills)
+        b_cell.alignment = Alignment(horizontal="right", vertical="center")
+        b_cell.font = font_data_b
+        b_cell.number_format = "#,##0"
 
-            b_cell = ws1.cell(r_sum, 13, br_bills)
-            b_cell.alignment = Alignment(horizontal="right", vertical="center")
-            b_cell.number_format = "#,##0"
+        w_cell = ws1.cell(r_sum, 13, br_weight)
+        w_cell.alignment = Alignment(horizontal="right", vertical="center")
+        w_cell.font = font_data
+        w_cell.number_format = "#,##0"
 
-            w_cell = ws1.cell(r_sum, 14, br_weight)
-            w_cell.alignment = Alignment(horizontal="right", vertical="center")
-            w_cell.number_format = "#,##0"
-
-            for ci in range(10, 15):
-                c_item = ws1.cell(r_sum, ci)
-                c_item.font = font_data_b if ci in (11, 13) else font_data
-                c_item.border = border_clean
-            r_sum += 1
-    else:
-        for br in sorted(branch_groups.keys()):
-            br_items = branch_groups[br]
-            br_bills = 0
-            br_weight = 0
-
-            for zone_str, b_code, dist, stats in br_items:
-                ws1.row_dimensions[r_sum].height = 20.0
-                s_vals = [zone_str, b_code, dist, stats["bills"], stats["weight"]]
-                for ci, val in enumerate(s_vals, 10):
-                    cell = ws1.cell(r_sum, ci, val)
-                    cell.font = font_data
-                    cell.border = border_clean
-                    if ci in (10, 11, 12):
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                    elif ci in (13, 14):
-                        cell.alignment = Alignment(horizontal="right", vertical="center")
-                        if ci == 14:
-                            cell.number_format = "#,##0"
-                br_bills += stats["bills"]
-                br_weight += stats["weight"]
-                r_sum += 1
-
-            # Branch Subtotal Row (e.g. KAN Total, PNP Total, PRE Total, SVA Total)
-            ws1.row_dimensions[r_sum].height = 22.0
-            ws1.merge_cells(start_row=r_sum, start_column=10, end_row=r_sum, end_column=12)
-            sub_lbl = ws1.cell(r_sum, 10, f"{br} Total")
-            sub_lbl.font = Font(name="Segoe UI", size=10, bold=True, color="0F172A")
-            sub_lbl.alignment = Alignment(horizontal="left", vertical="center")
-
-            for c in range(10, 13):
-                cell = ws1.cell(r_sum, c)
-                cell.fill = sub_fill
-                cell.border = sub_border
-
-            sub_b_cell = ws1.cell(r_sum, 13, br_bills)
-            sub_b_cell.font = Font(name="Segoe UI", size=10, bold=True, color="0F172A")
-            sub_b_cell.fill = sub_fill
-            sub_b_cell.border = sub_border
-            sub_b_cell.alignment = Alignment(horizontal="right", vertical="center")
-            sub_b_cell.number_format = "#,##0"
-
-            sub_w_cell = ws1.cell(r_sum, 14, br_weight)
-            sub_w_cell.font = Font(name="Segoe UI", size=10, bold=True, color="991B1B")
-            sub_w_cell.fill = sub_fill
-            sub_w_cell.border = sub_border
-            sub_w_cell.alignment = Alignment(horizontal="right", vertical="center")
-            sub_w_cell.number_format = "#,##0"
-            r_sum += 1
+        for ci in range(10, 14):
+            c_item = ws1.cell(r_sum, ci)
+            c_item.border = border_clean
+        r_sum += 1
 
     # Right Summary Total Row (CEO Double-Line Accounting Finish)
     ws1.row_dimensions[r_sum].height = 25.0
-    ws1.merge_cells(start_row=r_sum, start_column=10, end_row=r_sum, end_column=12)
+    ws1.merge_cells(start_row=r_sum, start_column=10, end_row=r_sum, end_column=11)
     tot_label_str = f"{target_clean} Total ({len(branch_groups)} Branches)" if is_zone_summary else f"{target_clean} Total"
     tot_label_cell = ws1.cell(r_sum, 10, tot_label_str)
     tot_label_cell.font = font_tot
     tot_label_cell.alignment = Alignment(horizontal="left", vertical="center")
-    for c in range(10, 13):
+    for c in range(10, 12):
         cell = ws1.cell(r_sum, c)
         cell.fill = fill_sum_tot
         cell.border = tot_border_accounting
 
-    tot_b_cell = ws1.cell(r_sum, 13, total_bills)
+    tot_b_cell = ws1.cell(r_sum, 12, total_bills)
     tot_b_cell.font = font_tot
     tot_b_cell.fill = fill_sum_tot
     tot_b_cell.border = tot_border_accounting
     tot_b_cell.alignment = Alignment(horizontal="right", vertical="center")
 
-    tot_w_cell = ws1.cell(r_sum, 14, total_weight)
+    tot_w_cell = ws1.cell(r_sum, 13, total_weight)
     tot_w_cell.font = font_tot_red
     tot_w_cell.fill = fill_sum_tot
     tot_w_cell.border = tot_border_accounting
+    tot_w_cell.alignment = Alignment(horizontal="right", vertical="center")
+    tot_w_cell.number_format = "#,##0"
     tot_w_cell.alignment = Alignment(horizontal="right", vertical="center")
     tot_w_cell.number_format = "#,##0"
 
@@ -1149,11 +1096,11 @@ def render_executive_summary_image(out_xlsx):
         if ws.cell(r, 10).value is not None or ws.cell(r, 13).value is not None:
             max_r = r
 
-    # Copy Cols J to N (10 to 14) into Cols A to E (1 to 5)
+    # Copy Cols J to M (10 to 13) into Cols A to D (1 to 4)
     for r in range(1, max_r + 1):
         if ws.row_dimensions[r].height:
             ws_sum.row_dimensions[r].height = ws.row_dimensions[r].height
-        for c_idx in range(5):
+        for c_idx in range(4):
             orig_c = 10 + c_idx
             target_c = 1 + c_idx
             cell_orig = ws.cell(r, orig_c)
@@ -1166,9 +1113,9 @@ def render_executive_summary_image(out_xlsx):
                 cell_tgt.alignment = copy.copy(cell_orig.alignment)
                 cell_tgt.number_format = cell_orig.number_format
 
-    # Copy all merged ranges for Cols J..N (10..14) -> A..E (1..5)
+    # Copy all merged ranges for Cols J..M (10..13) -> A..D (1..4)
     for m_range in ws.merged_cells.ranges:
-        if m_range.min_col >= 10 and m_range.max_col <= 14:
+        if m_range.min_col >= 10 and m_range.max_col <= 13:
             new_min_c = m_range.min_col - 9
             new_max_c = m_range.max_col - 9
             ws_sum.merge_cells(
@@ -1179,7 +1126,7 @@ def render_executive_summary_image(out_xlsx):
             )
 
     # Column Widths
-    col_widths = [14, 22, 18, 12, 24]
+    col_widths = [16, 18, 14, 24]
     for ci, w in enumerate(col_widths, 1):
         ws_sum.column_dimensions[get_column_letter(ci)].width = w
 

@@ -78,26 +78,76 @@ def load_pickup_lookup():
     return _pickup_lookup_map
 
 
+def is_agent_or_showroom(code: str) -> bool:
+    if not code:
+        return False
+    c = str(code).strip().upper()
+    if len(c) >= 4 and c[3] in ('A', 'S'):
+        return True
+    if re.search(r'[A-Z]{3}P\d+[AS]$', c):
+        return True
+    if re.search(r'^[A-Z]{3}[AS]\d+', c):
+        return True
+    return False
+
+
 def resolve_parent_po(raw_po, valid_targets=None):
-    if not raw_po or str(raw_po).strip().upper() == 'NAN':
-        return raw_po
+    if not raw_po or str(raw_po).strip().upper() in ('', 'NAN', 'NONE'):
+        return None
     po_str = str(raw_po).strip().upper()
+
+    # If it is an Agent or Showroom, do NOT count or resolve it as a branch
+    if is_agent_or_showroom(po_str):
+        return None
+
+    # 1. Exact match in valid_targets or MAIN_36_BRANCHES
     if valid_targets and po_str in valid_targets:
         return po_str
     if po_str in MAIN_36_BRANCHES:
         return po_str
-    
+
+    # 2. Check 7-character main code (e.g., PNPP006 -> PNPP006)
+    if len(po_str) >= 7:
+        code_7 = po_str[:7]
+        if not is_agent_or_showroom(code_7):
+            if valid_targets and code_7 in valid_targets:
+                return code_7
+            if code_7 in MAIN_36_BRANCHES:
+                return code_7
+
+    # 3. Check lookup table (pickup_branch_lookup.csv)
     lk_map = load_pickup_lookup()
     mapped = lk_map.get(po_str)
-    if mapped and mapped in MAIN_36_BRANCHES:
-        return mapped
-    
-    prefix = po_str[:3]
-    for b in MAIN_36_BRANCHES:
-        if b.startswith(prefix):
-            return b
-            
-    return po_str
+    if mapped and not is_agent_or_showroom(mapped):
+        if valid_targets and mapped in valid_targets:
+            return mapped
+        if mapped in MAIN_36_BRANCHES:
+            return mapped
+        if len(mapped) >= 7 and mapped[:7] in MAIN_36_BRANCHES:
+            return mapped[:7]
+
+    # 4. Extract candidate if po_str matches branch pattern e.g., PNPP014
+    m = re.match(r'^([A-Z]{3}P\d{3})', po_str)
+    if m:
+        cand = m.group(1)
+        if not is_agent_or_showroom(cand):
+            if valid_targets and cand in valid_targets:
+                return cand
+            if cand in MAIN_36_BRANCHES:
+                return cand
+
+    # 5. Prefix fallback: ONLY for short codes (<= 4 chars e.g. "BAN", "PNP")
+    if len(po_str) <= 4:
+        prefix = po_str[:3]
+        matches = [b for b in MAIN_36_BRANCHES if b.startswith(prefix)]
+        if matches:
+            if valid_targets:
+                for m_b in matches:
+                    if m_b in valid_targets:
+                        return m_b
+            return matches[0]
+
+    return None
 
 
 
@@ -502,37 +552,42 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
     note_cols = [c for c in df.columns if any(k in str(c).upper() for k in ('NOTE', 'VAS', 'EXTRA', 'SERVICE', 'DESCRIPTION'))]
 
     today = report_date or datetime.now().date()
-    tgt = "".join(c for c in str(target_label).upper() if c.isalnum() or c in ("-", "_")).strip()
-    if not tgt:
-        tgt = "ALL"
+    target_branches = []
+    tokens = [t.strip().upper() for t in str(target_label).replace(",", " ").split() if t.strip()]
+    if not tokens:
+        tokens = ["ALL"]
 
-    if tgt.startswith("ZONE"):
-        target_branches = ZONE_BRANCHES.get(tgt, [])
-    elif tgt in ("ALL", "TOTAL"):
-        target_branches = MAIN_36_BRANCHES
-    elif tgt in MAIN_36_BRANCHES:
-        target_branches = [tgt]
-    else:
-        # Handle partial branch names (e.g., "SIE" should match "SIEP001", "SIEA006", etc.)
-        if len(tgt) <= 3:  # Short codes like "SIE", "PNP", "BAN"
-            # Find all branches that start with this prefix
-            matching_branches = [b for b in MAIN_36_BRANCHES if b.startswith(tgt)]
-            if matching_branches:
-                target_branches = matching_branches
+    for tok in tokens:
+        clean_tok = "".join(c for c in tok if c.isalnum() or c in ("-", "_")).strip()
+        if not clean_tok:
+            continue
+        if clean_tok in ("ALL", "TOTAL"):
+            target_branches.extend(MAIN_36_BRANCHES)
+        elif clean_tok.startswith("ZONE") and clean_tok in ZONE_BRANCHES:
+            target_branches.extend(ZONE_BRANCHES[clean_tok])
+        elif clean_tok in MAIN_36_BRANCHES:
+            target_branches.append(clean_tok)
+        elif len(clean_tok) <= 3:
+            matching = [b for b in MAIN_36_BRANCHES if b.startswith(clean_tok)]
+            if matching:
+                target_branches.extend(matching)
             else:
-                target_branches = [tgt]  # Keep original if no matches
+                target_branches.append(clean_tok)
         else:
-            target_branches = [tgt]
+            target_branches.append(clean_tok)
+
+    seen = set()
+    target_branches = [b for b in target_branches if not (b in seen or seen.add(b))]
+    if not target_branches:
+        target_branches = MAIN_36_BRANCHES
 
     df['status_code_clean'] = df[col_status].astype(str).str.extract(r'^(\d{3})')[0]
     df['curr_po_clean'] = df[col_orig_po].astype(str).str.strip().str.upper()
     df['deliv_po_clean'] = df[col_dest_po].astype(str).str.strip().str.upper()
     df['deliv_date'] = df[col_action_time].apply(parse_date)
 
-    df['raw_po_clean'] = df['deliv_po_clean'].where(
-        (df['deliv_po_clean'].notna()) & (df['deliv_po_clean'] != 'NAN') & (df['deliv_po_clean'] != ''),
-        df['curr_po_clean']
-    )
+    # Speed report counts ONLY by CURRENT POST OFFICE, strictly excluding agents and showrooms
+    df['raw_po_clean'] = df['curr_po_clean']
     df['resolved_po'] = df['raw_po_clean'].apply(lambda x: resolve_parent_po(x, valid_targets=target_branches))
 
     summary_data = {}
@@ -548,7 +603,7 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
             "total_commission": 0.0
         }
 
-    # 1. Need Deliver Count (Pending VTT delivery bills)
+    # 1. Need Deliver Count (Pending VTT delivery bills at current branch post office)
     pending_statuses = ('306', '309', '311', '400', '401', '402', '420', '430', '471', '472', '480')
     need_deliv_df = df[df['status_code_clean'].isin(pending_statuses)]
     for row in need_deliv_df.to_dict('records'):
@@ -561,9 +616,12 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
         if not is_vtt:
             continue
 
-        raw_po = str(row.get('raw_po_clean', '') or '').strip()
-        po = str(row.get('resolved_po', '') or '').strip() or resolve_parent_po(raw_po, valid_targets=target_branches)
-        if po in summary_data:
+        curr_po = str(row.get('curr_po_clean', '') or row.get('raw_po_clean', '') or '').strip()
+        if not curr_po or curr_po == 'NAN' or is_agent_or_showroom(curr_po):
+            continue
+
+        po = str(row.get('resolved_po', '') or '').strip() or resolve_parent_po(curr_po, valid_targets=target_branches)
+        if po and po in summary_data:
             summary_data[po]["need_deliver"] += 1
 
     # 2. Delivered Today (Status 410) with enhanced filtering
@@ -592,17 +650,15 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
     if target_branches and target_branches != ["ALL"] and set(target_branches) != set(MAIN_36_BRANCHES):
         print(f"DEBUG: Filtering for target branches: {target_branches}")
         
-        # Handle partial matching for short branch codes (e.g., "SIE" should match SIEP001, SIEA001, etc.)
+        # Match only resolved branch codes (excluding agents/showrooms)
         if len(target_branches) == 1 and len(target_branches[0]) <= 3:
             prefix = target_branches[0]
             delivered_df = delivered_df[
-                delivered_df['resolved_po'].str.startswith(prefix, na=False) |
-                delivered_df['raw_po_clean'].str.startswith(prefix, na=False)
+                delivered_df['resolved_po'].str.startswith(prefix, na=False)
             ]
         else:
             delivered_df = delivered_df[
-                delivered_df['resolved_po'].isin(target_branches) |
-                delivered_df['raw_po_clean'].isin(target_branches)
+                delivered_df['resolved_po'].isin(target_branches)
             ]
             
         print(f"DEBUG: After branch filtering: {len(delivered_df)} orders")
@@ -614,16 +670,14 @@ def build_speed_report(src_xlsx, out_xlsx, target_label="ALL", report_date=None,
     batch_prefetch_tracking_trips(cand_order_ids)
 
     for row in delivered_df.to_dict('records'):
-        deliv_po = str(row.get('deliv_po_clean', '')).strip()
-        curr_po = str(row.get('curr_po_clean', '')).strip()
-        raw_po = str(row.get('raw_po_clean', '') or '').strip() or (deliv_po if deliv_po and deliv_po != 'NAN' else curr_po)
+        curr_po = str(row.get('curr_po_clean', '') or row.get('raw_po_clean', '') or '').strip()
 
-        if not raw_po or raw_po == 'NAN':
+        if not curr_po or curr_po == 'NAN' or is_agent_or_showroom(curr_po):
             continue
 
-        po = str(row.get('resolved_po', '') or '').strip() or resolve_parent_po(raw_po, valid_targets=target_branches)
+        po = str(row.get('resolved_po', '') or '').strip() or resolve_parent_po(curr_po, valid_targets=target_branches)
 
-        if po not in summary_data:
+        if not po or po not in summary_data:
             continue
 
 
@@ -1220,10 +1274,7 @@ def render_speed_summary_image(out_xlsx):
                 cell_tgt.border = copy.copy(cell_orig.border)
                 cell_tgt.alignment = copy.copy(cell_orig.alignment)
 
-    col_widths = {1: 6, 2: 15, 3: 16, 4: 15, 5: 16, 6: 16, 7: 16, 8: 15, 9: 13, 10: 13, 11: 17}
-    for c, w in col_widths.items():
-        ws_sum.column_dimensions[get_column_letter(c)].width = w
-
+    col_widths = {1: 8, 2: 18, 3: 16, 4: 16, 5: 18, 6: 18, 7: 18, 8: 16, 9: 14, 10: 14, 11: 18}
     for c, w in col_widths.items():
         ws_sum.column_dimensions[get_column_letter(c)].width = w
 

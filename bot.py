@@ -1106,10 +1106,21 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def run_pending_auto_scheduler(app: Application):
-    """Background task loop that sends /total pending report every 2h to [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT."""
-    log.info("Starting background auto-scheduler for [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT...")
-    TARGET_CHAT_ID = -1003964504795
-    SCHEDULED_HOURS = {"08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"}
+    """Background task loop that sends /total pending report every 2h to registered target groups."""
+    log.info("Starting background auto-scheduler...")
+    SCHEDULED_TARGETS = [
+        {
+            "chat_id": -1003964504795,
+            "title": "[🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT",
+            "hours": {"08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"}
+        },
+        {
+            "chat_id": -5481716194,
+            "title": "[🔴 QUALITY] - METFONE EXPRESS",
+            "hours": {"08:00", "14:00", "16:00", "18:00", "20:00"}
+        }
+    ]
+    ALL_SCHEDULED_HOURS = set().union(*(t["hours"] for t in SCHEDULED_TARGETS))
     state_file = os.path.join(HERE, "pending_schedule_state.json")
 
     def _load_state():
@@ -1139,10 +1150,12 @@ async def run_pending_auto_scheduler(app: Application):
             date_str = now.strftime("%Y-%m-%d")
             
             current_slot = None
-            for slot in SCHEDULED_HOURS:
+            slot_time = None
+            for slot in ALL_SCHEDULED_HOURS:
                 sh, sm = map(int, slot.split(":"))
                 if now.hour == sh and 0 <= now.minute <= 5:
                     current_slot = f"{date_str}_{slot.replace(':', '')}"
+                    slot_time = slot
                     break
 
             if not current_slot:
@@ -1152,12 +1165,17 @@ async def run_pending_auto_scheduler(app: Application):
             if state.get("last_run_slot") == current_slot:
                 continue
 
+            active_targets = [t for t in SCHEDULED_TARGETS if slot_time in t["hours"]]
+            if not active_targets:
+                continue
+
             # Immediately claim slot to prevent concurrent or duplicate execution
             state["last_run_slot"] = current_slot
             state["last_trigger_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
             _save_state(state)
 
-            log.info("Triggering scheduled TOTAL PENDING report for target group %s, slot %s...", TARGET_CHAT_ID, current_slot)
+            target_names = ", ".join(f"{t['title']} ({t['chat_id']})" for t in active_targets)
+            log.info("Triggering scheduled TOTAL PENDING report for target group(s) [%s], slot %s...", target_names, current_slot)
             tmpdir = _make_run_cache("auto_pending_run")
             stamp = now.strftime("%d.%m_%HH%M")
             src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
@@ -1174,37 +1192,45 @@ async def run_pending_auto_scheduler(app: Application):
                 img_buf.name = f"TOTAL_PENDING_{stamp}.png"
 
                 sender_bot = get_group_sender_bot()
-                try:
-                    await sender_bot.send_photo(
-                        chat_id=TARGET_CHAT_ID,
-                        photo=img_buf,
-                        caption=text_caption,
-                        parse_mode="Markdown"
-                    )
-                except Exception as e_photo:
-                    log.warning("Could not send scheduled photo to %s: %s. Trying document fallback...", TARGET_CHAT_ID, e_photo)
-                    if hasattr(img_buf, "seek"):
-                        img_buf.seek(0)
-                    await sender_bot.send_document(
-                        chat_id=TARGET_CHAT_ID,
-                        document=img_buf,
-                        filename=img_buf.name,
-                        caption=text_caption,
-                        parse_mode="Markdown"
-                    )
+                for target in active_targets:
+                    t_chat_id = target["chat_id"]
+                    t_title = target["title"]
+                    try:
+                        if hasattr(img_buf, "seek"):
+                            img_buf.seek(0)
+                        try:
+                            await sender_bot.send_photo(
+                                chat_id=t_chat_id,
+                                photo=img_buf,
+                                caption=text_caption,
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e_photo:
+                            log.warning("Could not send scheduled photo to %s (%s): %s. Trying document fallback...", t_chat_id, t_title, e_photo)
+                            if hasattr(img_buf, "seek"):
+                                img_buf.seek(0)
+                            await sender_bot.send_document(
+                                chat_id=t_chat_id,
+                                document=img_buf,
+                                filename=img_buf.name,
+                                caption=text_caption,
+                                parse_mode="Markdown"
+                            )
 
-                with open(out_xlsx, "rb") as f:
-                    await sender_bot.send_document(
-                        chat_id=TARGET_CHAT_ID,
-                        document=f,
-                        filename=os.path.basename(out_xlsx),
-                        caption=f"📋 TOTAL PENDING REPORT {now.strftime('%d/%m/%Y %H:%M')}"
-                    )
+                        with open(out_xlsx, "rb") as f:
+                            await sender_bot.send_document(
+                                chat_id=t_chat_id,
+                                document=f,
+                                filename=os.path.basename(out_xlsx),
+                                caption=f"TOTAL PENDING REPORT {now.strftime('%d/%m/%Y %H:%M')}"
+                            )
+                        log.info("Successfully delivered scheduled TOTAL PENDING report to %s (%s)", t_chat_id, t_title)
+                    except Exception as e_send:
+                        log.exception("Error sending scheduled report to %s (%s): %s", t_chat_id, t_title, e_send)
 
                 state["last_run_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                 state["total_items"] = grand_total.get("Total", 0)
                 _save_state(state)
-                log.info("Successfully delivered scheduled TOTAL PENDING report to %s", TARGET_CHAT_ID)
             except Exception as e_run:
                 log.exception("Error executing auto-scheduled TOTAL PENDING report: %s", e_run)
                 state["last_error"] = str(e_run)
@@ -1240,8 +1266,10 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "✅ *Auto-Schedule ENABLED*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "• Target Group: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT\n"
-            "• Hours: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 (every 2h)\n"
+            "• Target 1: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
+            "  Hours: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 (every 2h)\n"
+            "• Target 2: [🔴 QUALITY] - METFONE EXPRESS (-5481716194)\n"
+            "  Hours: 08:00, 14:00, 16:00, 18:00, 20:00 (10:00 & 12:00 excluded)\n"
             "• Status: Active in background"
         )
     elif sub in ("off", "pause", "stop", "disable"):
@@ -1250,7 +1278,8 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "⏸ *Auto-Schedule PAUSED*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "• Target Group: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT\n"
+            "• Target 1: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
+            "• Target 2: [🔴 QUALITY] - METFONE EXPRESS (-5481716194)\n"
             "• Status: Paused\n\n"
             "Use `/schedule on` or `/resume` to re-enable."
         )
@@ -1260,8 +1289,10 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"📅 *Auto-Schedule Status: {status_str}*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "• Target Group: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
-            "• Hours: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 (every 2h)\n"
+            "• Target 1: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
+            "  Hours: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 (every 2h)\n"
+            "• Target 2: [🔴 QUALITY] - METFONE EXPRESS (-5481716194)\n"
+            "  Hours: 08:00, 14:00, 16:00, 18:00, 20:00 (10:00 & 12:00 excluded)\n"
             "• Report: /total pending (Summary Photo + Detailed Excel)\n\n"
             "Commands:\n"
             "• `/schedule on` — Enable schedule mode\n"
@@ -1915,14 +1946,17 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if hr["handle"] in zone_filter
             ]
             # Recalculate overall_counts from filtered handles
-            overall = {"Pickup": 0, "Delivery": 0, "Pending": 0}
+            overall = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
             for hr in result["handle_results"]:
-                for k in overall:
-                    overall[k] += hr["handle_counts"].get(k, 0)
+                hc = hr.get("handle_counts", {})
+                overall["Pickup"] += hc.get("Pickup", 0)
+                overall["Delivery"] += hc.get("Delivery", 0)
+                overall["Transit"] += hc.get("Transit", 0) or hc.get("Send Mega", 0)
+                overall["Branch"] += hc.get("Branch", 0) or hc.get("Not Assign", 0)
             result["overall_counts"] = overall
 
             # Filter type_data DataFrames
-            for rn in ["Pickup", "Delivery", "Pending"]:
+            for rn in list(result.get("type_data", {}).keys()):
                 df = result.get("type_data", {}).get(rn)
                 if df is not None and not df.empty:
                     filter_col = "POST OFFICE HANDLE"
@@ -1935,18 +1969,29 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Calculate day_date_counts and urgent_counts for /total image
         total_day_date_counts = {}
         total_urgent_counts   = {}
-        urgent_by_type        = {"Pickup": 0, "Delivery": 0, "Pending": 0}
+        urgent_by_type        = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
         today_date = datetime.now().date()
         today_ts = pd.Timestamp.now().normalize()
 
         total_fee_counts = {}
         total_cod_counts = {}
 
-        for rn in ["Pickup", "Delivery", "Pending"]:
-            df_z = result.get("type_data", {}).get(rn)
-            if df_z is None or df_z.empty:
-                continue
+        canonical_rn_map = {
+            "Pickup": "Pickup",
+            "Delivery": "Delivery",
+            "Not Assign": "Branch",
+            "Branch": "Branch",
+            "Send Mega": "Transit",
+            "Transit": "Transit",
+        }
 
+        processed_dfs = set()
+        for rn, df_z in (result.get("type_data") or {}).items():
+            if df_z is None or df_z.empty or id(df_z) in processed_dfs:
+                continue
+            processed_dfs.add(id(df_z))
+
+            canon_key = canonical_rn_map.get(rn, rn)
             handle_col = "POST OFFICE HANDLE"
             if handle_col not in df_z.columns:
                 continue
@@ -1954,6 +1999,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
             df_z = df_z.copy()
             df_z["_h_upper"] = df_z[handle_col].fillna("").astype(str).str.strip().str.upper()
             df_z = df_z[df_z["_h_upper"] != ""]
+            df_z = df_z[~df_z["_h_upper"].apply(lambda h: len(h) >= 4 and h[3] in ('A', 'S'))]
             if df_z.empty:
                 continue
 
@@ -1981,7 +2027,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 df_ge1 = df_z[days_old >= 1]
                 if not df_ge1.empty:
-                    urgent_by_type[rn] = urgent_by_type.get(rn, 0) + len(df_ge1)
+                    urgent_by_type[canon_key] = urgent_by_type.get(canon_key, 0) + len(df_ge1)
                     ge1_grp = df_ge1.groupby("_h_upper").size()
                     for h, cnt in ge1_grp.items():
                         if h not in total_urgent_counts:
@@ -2019,6 +2065,9 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         total_cod_counts[h] = total_cod_counts.get(h, 0.0) + float(c_v)
 
         overall = result["overall_counts"]
+        for k in urgent_by_type:
+            urgent_by_type[k] = min(urgent_by_type[k], overall.get(k, 0))
+
         grand_total = sum(overall.values())
         total_urgent_sum = sum(urgent_by_type.values())
 
@@ -2027,23 +2076,84 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 {zone_label} Report  {datetime.now().strftime('%d/%m/%Y %H:%M')}",
             f"Pickup: {overall.get('Pickup', 0)} (Urgent: {urgent_by_type.get('Pickup', 0)})  |  "
             f"Delivery: {overall.get('Delivery', 0)} (Urgent: {urgent_by_type.get('Delivery', 0)})  |  "
-            f"Pending: {overall.get('Pending', 0)} (Urgent: {urgent_by_type.get('Pending', 0)})",
+            f"Transit: {overall.get('Transit', 0) or overall.get('Send Mega', 0)} (Urgent: {urgent_by_type.get('Transit', 0)})  |  "
+            f"Branch: {overall.get('Branch', 0) or overall.get('Not Assign', 0)} (Urgent: {urgent_by_type.get('Branch', 0)})",
             f"Grand Total: {grand_total}  |  Total Urgent: {total_urgent_sum}",
         ])
 
-        # 1. Summary image — totals per handle
-        img_buf = generate_summary.build_summary_image(
-            result["handle_results"],
-            result["overall_counts"],
-            zone_label=zone_label,
-            day_date_counts=total_day_date_counts if total_day_date_counts else None,
-            urgent_counts=total_urgent_counts if total_urgent_counts else None,
-            fee_counts=total_fee_counts if total_fee_counts else None,
-            cod_counts=total_cod_counts if total_cod_counts else None,
-            vip_counts=result.get("vip_counts"),
-        )
-        img_buf.name = "summary.png"
-        await send_requester_photo(update, context, img_buf, caption=result["summary_caption"])
+        # 1. Summary image — totals per handle (2 pictures for PNP Area and Provincial Branches)
+        pnp_handles = [hr for hr in result["handle_results"] if hr["handle"].upper().startswith("PNP") or hr["handle"].upper().startswith("KAN")]
+        prov_handles = [hr for hr in result["handle_results"] if not (hr["handle"].upper().startswith("PNP") or hr["handle"].upper().startswith("KAN"))]
+
+        if not zone_filter and pnp_handles and prov_handles:
+            # Send Pic 1: Phnom Penh Area
+            pnp_overall = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
+            for hr in pnp_handles:
+                hc = hr.get("handle_counts", {})
+                pnp_overall["Pickup"] += hc.get("Pickup", 0)
+                pnp_overall["Delivery"] += hc.get("Delivery", 0)
+                pnp_overall["Transit"] += hc.get("Transit", 0) or hc.get("Send Mega", 0)
+                pnp_overall["Branch"] += hc.get("Branch", 0) or hc.get("Not Assign", 0)
+            
+            pnp_tot = sum(pnp_overall.values())
+            pnp_caption = "\n".join([
+                f"📋 PHNOM PENH AREA  {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                f"Pickup: {pnp_overall['Pickup']}  |  Delivery: {pnp_overall['Delivery']}  |  Transit: {pnp_overall['Transit']}  |  Branch: {pnp_overall['Branch']}",
+                f"Total: {pnp_tot}",
+            ])
+            img_pnp = generate_summary.build_summary_image(
+                pnp_handles,
+                pnp_overall,
+                zone_label="PHNOM PENH AREA",
+                day_date_counts=total_day_date_counts if total_day_date_counts else None,
+                urgent_counts=total_urgent_counts if total_urgent_counts else None,
+                fee_counts=total_fee_counts if total_fee_counts else None,
+                cod_counts=total_cod_counts if total_cod_counts else None,
+                vip_counts=result.get("vip_counts"),
+            )
+            img_pnp.name = "summary_pnp.png"
+            await send_requester_photo(update, context, img_pnp, caption=pnp_caption)
+
+            # Send Pic 2: Provincial Branches
+            prov_overall = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
+            for hr in prov_handles:
+                hc = hr.get("handle_counts", {})
+                prov_overall["Pickup"] += hc.get("Pickup", 0)
+                prov_overall["Delivery"] += hc.get("Delivery", 0)
+                prov_overall["Transit"] += hc.get("Transit", 0) or hc.get("Send Mega", 0)
+                prov_overall["Branch"] += hc.get("Branch", 0) or hc.get("Not Assign", 0)
+
+            prov_tot = sum(prov_overall.values())
+            prov_caption = "\n".join([
+                f"📋 PROVINCIAL BRANCHES  {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                f"Pickup: {prov_overall['Pickup']}  |  Delivery: {prov_overall['Delivery']}  |  Transit: {prov_overall['Transit']}  |  Branch: {prov_overall['Branch']}",
+                f"Total: {prov_tot}",
+            ])
+            img_prov = generate_summary.build_summary_image(
+                prov_handles,
+                prov_overall,
+                zone_label="PROVINCIAL BRANCHES",
+                day_date_counts=total_day_date_counts if total_day_date_counts else None,
+                urgent_counts=total_urgent_counts if total_urgent_counts else None,
+                fee_counts=total_fee_counts if total_fee_counts else None,
+                cod_counts=total_cod_counts if total_cod_counts else None,
+                vip_counts=result.get("vip_counts"),
+            )
+            img_prov.name = "summary_prov.png"
+            await send_requester_photo(update, context, img_prov, caption=prov_caption)
+        else:
+            img_buf = generate_summary.build_summary_image(
+                result["handle_results"],
+                result["overall_counts"],
+                zone_label=zone_label,
+                day_date_counts=total_day_date_counts if total_day_date_counts else None,
+                urgent_counts=total_urgent_counts if total_urgent_counts else None,
+                fee_counts=total_fee_counts if total_fee_counts else None,
+                cod_counts=total_cod_counts if total_cod_counts else None,
+                vip_counts=result.get("vip_counts"),
+            )
+            img_buf.name = "summary.png"
+            await send_requester_photo(update, context, img_buf, caption=result["summary_caption"])
 
         # 2. Total Excel — 3 tables on one sheet (Pickup / Delivery / Pending)
         label = f"Total_{zone_label}_" if zone_filter else "Total_"
@@ -2281,7 +2391,7 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(out_xlsx, "rb") as f:
             await send_requester_document(update, context, f, os.path.basename(out_xlsx))
 
-        # 3. Group Forwarding (When target is ALL, MEGA, or TOTAL)
+        # 3. Group Forwarding
         tgt_upper = target_label.upper().replace(" ", "")
         total_sent_zones = 0
         total_sent_branches = 0
@@ -2290,14 +2400,16 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_or_send_requester_text(msg, update, context, "⏸ Bot is paused — forwarding to groups skipped (test only).")
             return
 
-        if tgt_upper in ("ALL", "TOTAL", "MEGA") and not no_fwd:
+        if not no_fwd:
             sender_bot = get_group_sender_bot(context)
             # A. Forward to 5 Zone Groups (Unless skip_zone)
-            if not skip_zone:
+            if not skip_zone and (tgt_upper in ("ALL", "TOTAL", "MEGA") or tgt_upper.startswith("ZONE")):
                 zone_fwd_map = cfg.get("zone_forward_mapping", {})
                 for z_idx in range(1, 6):
                     z_name = f"Zone {z_idx}"
                     z_clean = f"zone{z_idx}"
+                    if tgt_upper.startswith("ZONE") and tgt_upper != z_clean.upper():
+                        continue
                     z_xlsx = os.path.join(tmpdir, f"DELIVERY_SPEED_REPORT_{stamp}_{z_name.replace(' ', '_')}{suffix_file}.xlsx")
                     try:
                         z_del, z_u2, z_24, z_o8, z_pay = await asyncio.to_thread(
@@ -2345,6 +2457,17 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     br_code = handles[0].upper()
                     if br_code not in speed_report.MAIN_36_BRANCHES:
                         continue
+
+                    # If specific branch handles were supplied in command, ONLY forward to those requested branches!
+                    if tgt_upper not in ("ALL", "TOTAL", "MEGA") and not tgt_upper.startswith("ZONE"):
+                        req_target_branches = [b.upper() for b in filtered_args]
+                        matched = False
+                        for r_tb in req_target_branches:
+                            if br_code == r_tb or (len(r_tb) <= 3 and br_code.startswith(r_tb)):
+                                matched = True
+                                break
+                        if not matched:
+                            continue
 
                     br_xlsx = os.path.join(tmpdir, f"DELIVERY_SPEED_REPORT_{stamp}_{br_code}{suffix_file}.xlsx")
                     try:
@@ -2474,37 +2597,6 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if tgt_upper in ("ALL", "MEGA"):
-            zone_fwd_map = cfg.get("zone_forward_mapping", {})
-            total_sent_zones = 0
-            for z_idx in range(1, 6):
-                z_name = f"Zone {z_idx}"
-                z_clean = f"zone{z_idx}"
-                z_xlsx = os.path.join(tmpdir, f"SHIPMENTS_INCOMING_REPORT_{stamp}_{z_name.replace(' ', '_')}.xlsx")
-                z_bills, z_weight = await asyncio.to_thread(shipments_tomorrow.build_shipments_tomorrow_report, src, z_xlsx, target_label=z_name)
-                z_caption = f"🚚 *SHIPMENTS INCOMING REPORT ({z_name})*\n📦 Total Bills: `{z_bills}`\n⚖️ Total Weight: `{z_weight/1000:,.2f} kg`"
-
-                for gid, zkey in zone_fwd_map.items():
-                    if zkey.lower() == z_clean:
-                        try:
-                            try:
-                                z_img = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, z_xlsx)
-                                z_img.name = f"EXECUTIVE_SUMMARY_{z_name.replace(' ', '_')}.png"
-                                await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=z_img)
-                            except Exception as e_zp:
-                                log.warning("Failed sending zone photo to group %s: %s", gid, e_zp)
-
-                            with open(z_xlsx, "rb") as f_doc:
-                                await safe_api_call(
-                                    sender_bot.send_document,
-                                    chat_id=int(gid),
-                                    document=f_doc,
-                                    filename=os.path.basename(z_xlsx),
-                                    caption=z_caption
-                                )
-                                total_sent_zones += 1
-                        except Exception as e_fwd:
-                            log.warning("Failed forwarding /tomorrow document to zone group %s: %s", gid, e_fwd)
-
             fwd_map = get_forward_mapping(cfg)
             total_sent_branches = 0
             for gid, handles in fwd_map.items():
@@ -2537,7 +2629,7 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e_br:
                     log.warning("Failed building/forwarding tomorrow report for branch %s: %s", br_code, e_br)
 
-            await edit_or_send_requester_text(msg, update, context, f"✅ Done! Forwarded SHIPMENTS INCOMING REPORTS to {total_sent_zones} Zone Groups and {total_sent_branches} Provincial Branch Groups (excluding PNP/KAN).")
+            await edit_or_send_requester_text(msg, update, context, f"✅ Done! Forwarded SHIPMENTS INCOMING REPORTS to {total_sent_branches} Provincial Branch Groups.")
             return
 
         # Single target forwarding (Zone or Branch)

@@ -1126,14 +1126,17 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
     else:
         df['STATUS_CODE'] = ''
 
-    # ========== LIVE API STATUS SYNC (OPTIONAL / LOCAL LOGS ONLY) ==========
-    completed_from_sync = set()
+    # ========== LIVE API STATUS SYNC (PURGE SHIPPED/DELIVERED BILLS) ==========
+    try:
+        from shipped_filter import filter_shipped_bills_from_df
+        df, removed_shipped = filter_shipped_bills_from_df(df, verify_live=True)
+    except Exception as e_shipped:
+        print(f"[GENERATE_REPORT] Warning: Live shipped verification error: {e_shipped}")
     # ========== END LIVE API STATUS SYNC ==========
 
-    # ========== STRICT EXCLUDED STATUS SCRAPING / PRE-FILTERING ==========
-    # Scrape all excluded/completed status bills UPFRONT before report generation & comparison
-    excluded_codes = {'99', '100', '201', '410', '520'}
-    excluded_keywords = ['410', '520', 'GIAO THÀNH CÔNG', 'DELIVERED', 'COMPLETED', 'ĐÃ GIAO', 'DA GIAO', 'RETURN COMPLETED']
+    # Scrape all excluded/completed/420 status bills UPFRONT before report generation & comparison
+    excluded_codes = {'99', '100', '201', '410', '420', '520'}
+    excluded_keywords = ['410', '420', '520', 'GIAO THÀNH CÔNG', 'DELIVERED', 'COMPLETED', 'ĐÃ GIAO', 'DA GIAO', 'RETURN COMPLETED', 'FINISH', 'SUCCESS', 'HẸN GIAO LẠI', 'HEN GIAO LAI']
     
     if 'STATUS_CODE' in df.columns:
         sc_mask = df['STATUS_CODE'].astype(str).str.strip().isin(excluded_codes)
@@ -1141,6 +1144,9 @@ def generate_reports_from_data(export_path, ref_path, output_dir,
 
     if 'CURRENT STATUS' in df.columns:
         st_text = df['CURRENT STATUS'].astype(str).str.upper()
+        # Check if CURRENT STATUS starts with excluded codes (handles "410 - Delivered", "420 - Hen giao lai")
+        starts_with_excluded = st_text.str.match(r'^(99|100|201|410|420|520)\b')
+        df = df[~starts_with_excluded].copy()
         for kw in excluded_keywords:
             df = df[~st_text.str.contains(kw.upper(), na=False)].copy()
 

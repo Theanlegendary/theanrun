@@ -1685,14 +1685,17 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if hr["handle"] in zone_filter
             ]
             # Recalculate overall_counts from filtered handles
-            overall = {"Pickup": 0, "Delivery": 0, "Pending": 0}
+            overall = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
             for hr in result["handle_results"]:
-                for k in overall:
-                    overall[k] += hr["handle_counts"].get(k, 0)
+                hc = hr.get("handle_counts", {})
+                overall["Pickup"] += hc.get("Pickup", 0)
+                overall["Delivery"] += hc.get("Delivery", 0)
+                overall["Transit"] += hc.get("Transit", 0) or hc.get("Send Mega", 0)
+                overall["Branch"] += hc.get("Branch", 0) or hc.get("Not Assign", 0)
             result["overall_counts"] = overall
 
             # Filter type_data DataFrames
-            for rn in ["Pickup", "Delivery", "Pending"]:
+            for rn in list(result.get("type_data", {}).keys()):
                 df = result.get("type_data", {}).get(rn)
                 if df is not None and not df.empty:
                     filter_col = "POST OFFICE HANDLE"
@@ -1705,15 +1708,14 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Calculate day_date_counts and urgent_counts for /total image
         total_day_date_counts = {}
         total_urgent_counts   = {}
-        urgent_by_type        = {"Pickup": 0, "Delivery": 0, "Pending": 0}
+        urgent_by_type        = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
         today_date = datetime.now().date()
         today_ts = pd.Timestamp.now().normalize()
 
         total_fee_counts = {}
         total_cod_counts = {}
 
-        for rn in ["Pickup", "Delivery", "Pending"]:
-            df_z = result.get("type_data", {}).get(rn)
+        for rn, df_z in (result.get("type_data") or {}).items():
             if df_z is None or df_z.empty:
                 continue
 
@@ -1724,6 +1726,7 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
             df_z = df_z.copy()
             df_z["_h_upper"] = df_z[handle_col].fillna("").astype(str).str.strip().str.upper()
             df_z = df_z[df_z["_h_upper"] != ""]
+            df_z = df_z[~df_z["_h_upper"].apply(lambda h: len(h) >= 4 and h[3] in ('A', 'S'))]
             if df_z.empty:
                 continue
 
@@ -1789,6 +1792,9 @@ async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         total_cod_counts[h] = total_cod_counts.get(h, 0.0) + float(c_v)
 
         overall = result["overall_counts"]
+        for k in urgent_by_type:
+            urgent_by_type[k] = min(urgent_by_type[k], overall.get(k, 0))
+
         grand_total = sum(overall.values())
         total_urgent_sum = sum(urgent_by_type.values())
 
@@ -2051,7 +2057,7 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(out_xlsx, "rb") as f:
             await send_requester_document(update, context, f, os.path.basename(out_xlsx))
 
-        # 3. Group Forwarding (When target is ALL, MEGA, or TOTAL)
+        # 3. Group Forwarding
         tgt_upper = target_label.upper().replace(" ", "")
         total_sent_zones = 0
         total_sent_branches = 0
@@ -2060,14 +2066,16 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_or_send_requester_text(msg, update, context, "⏸ Bot is paused — forwarding to groups skipped (test only).")
             return
 
-        if tgt_upper in ("ALL", "TOTAL", "MEGA") and not no_fwd:
+        if not no_fwd:
             sender_bot = get_group_sender_bot(context)
             # A. Forward to 5 Zone Groups (Unless skip_zone)
-            if not skip_zone:
+            if not skip_zone and (tgt_upper in ("ALL", "TOTAL", "MEGA") or tgt_upper.startswith("ZONE")):
                 zone_fwd_map = cfg.get("zone_forward_mapping", {})
                 for z_idx in range(1, 6):
                     z_name = f"Zone {z_idx}"
                     z_clean = f"zone{z_idx}"
+                    if tgt_upper.startswith("ZONE") and tgt_upper != z_clean.upper():
+                        continue
                     z_xlsx = os.path.join(tmpdir, f"DELIVERY_SPEED_REPORT_{stamp}_{z_name.replace(' ', '_')}{suffix_file}.xlsx")
                     try:
                         z_del, z_u2, z_24, z_o8, z_pay = await asyncio.to_thread(
@@ -2115,6 +2123,17 @@ async def cmd_speed(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     br_code = handles[0].upper()
                     if br_code not in speed_report.MAIN_36_BRANCHES:
                         continue
+
+                    # If specific branch handles were supplied in command, ONLY forward to those requested branches!
+                    if tgt_upper not in ("ALL", "TOTAL", "MEGA") and not tgt_upper.startswith("ZONE"):
+                        req_target_branches = [b.upper() for b in filtered_args]
+                        matched = False
+                        for r_tb in req_target_branches:
+                            if br_code == r_tb or (len(r_tb) <= 3 and br_code.startswith(r_tb)):
+                                matched = True
+                                break
+                        if not matched:
+                            continue
 
                     br_xlsx = os.path.join(tmpdir, f"DELIVERY_SPEED_REPORT_{stamp}_{br_code}{suffix_file}.xlsx")
                     try:
@@ -2244,37 +2263,6 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if tgt_upper in ("ALL", "MEGA"):
-            zone_fwd_map = cfg.get("zone_forward_mapping", {})
-            total_sent_zones = 0
-            for z_idx in range(1, 6):
-                z_name = f"Zone {z_idx}"
-                z_clean = f"zone{z_idx}"
-                z_xlsx = os.path.join(tmpdir, f"SHIPMENTS_INCOMING_REPORT_{stamp}_{z_name.replace(' ', '_')}.xlsx")
-                z_bills, z_weight = await asyncio.to_thread(shipments_tomorrow.build_shipments_tomorrow_report, src, z_xlsx, target_label=z_name)
-                z_caption = f"🚚 *SHIPMENTS INCOMING REPORT ({z_name})*\n📦 Total Bills: `{z_bills}`\n⚖️ Total Weight: `{z_weight/1000:,.2f} kg`"
-
-                for gid, zkey in zone_fwd_map.items():
-                    if zkey.lower() == z_clean:
-                        try:
-                            try:
-                                z_img = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, z_xlsx)
-                                z_img.name = f"EXECUTIVE_SUMMARY_{z_name.replace(' ', '_')}.png"
-                                await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=z_img)
-                            except Exception as e_zp:
-                                log.warning("Failed sending zone photo to group %s: %s", gid, e_zp)
-
-                            with open(z_xlsx, "rb") as f_doc:
-                                await safe_api_call(
-                                    sender_bot.send_document,
-                                    chat_id=int(gid),
-                                    document=f_doc,
-                                    filename=os.path.basename(z_xlsx),
-                                    caption=z_caption
-                                )
-                                total_sent_zones += 1
-                        except Exception as e_fwd:
-                            log.warning("Failed forwarding /tomorrow document to zone group %s: %s", gid, e_fwd)
-
             fwd_map = get_forward_mapping(cfg)
             total_sent_branches = 0
             for gid, handles in fwd_map.items():
@@ -2307,7 +2295,7 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e_br:
                     log.warning("Failed building/forwarding tomorrow report for branch %s: %s", br_code, e_br)
 
-            await edit_or_send_requester_text(msg, update, context, f"✅ Done! Forwarded SHIPMENTS INCOMING REPORTS to {total_sent_zones} Zone Groups and {total_sent_branches} Provincial Branch Groups (excluding PNP/KAN).")
+            await edit_or_send_requester_text(msg, update, context, f"✅ Done! Forwarded SHIPMENTS INCOMING REPORTS to {total_sent_branches} Provincial Branch Groups.")
             return
 
         # Single target forwarding (Zone or Branch)

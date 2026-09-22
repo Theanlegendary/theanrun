@@ -7,6 +7,11 @@ def autofit_images_in_excel(xlsx_filename="All_Post_Offices_Image_Template.xlsx"
         print(f"File not found: {abs_path}")
         return
         
+    import pythoncom
+    try:
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
     xl = win32.Dispatch("Excel.Application")
     xl.Visible = False
     xl.DisplayAlerts = False

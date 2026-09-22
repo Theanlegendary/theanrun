@@ -1,0 +1,69 @@
+=== AGE BREAKDOWN IN DAYS ===
+  Days Old = 0 (Non-Urgent (Created Today 21/09/2026)): 36 orders
+  Days Old = 1 (Urgent (1 days old)): 834 orders
+  Days Old = 2 (Urgent (2 days old)): 767 orders
+  Days Old = 3 (Urgent (3 days old)): 374 orders
+  Days Old = 4 (Urgent (4 days old)): 205 orders
+  Days Old = 5 (Urgent (5 days old)): 158 orders
+  Days Old = 6 (Urgent (6 days old)): 84 orders
+  Days Old = 7 (Urgent (7 days old)): 51 orders
+  Days Old = 8 (Urgent (8 days old)): 28 orders
+  Days Old = 9 (Urgent (9 days old)): 44 orders
+  Days Old = 10 (Urgent (10 days old)): 44 orders
+  Days Old = 11 (Urgent (11 days old)): 22 orders
+  Days Old = 12 (Urgent (12 days old)): 47 orders
+  Days Old = 13 (Urgent (13 days old)): 29 orders
+  Days Old = 14 (Urgent (14 days old)): 16 orders
+  Days Old = 15 (Urgent (15 days old)): 5 orders
+  Days Old = 16 (Urgent (16 days old)): 7 orders
+  Days Old = 17 (Urgent (17 days old)): 11 orders
+  Days Old = 18 (Urgent (18 days old)): 21 orders
+  Days Old = 19 (Urgent (19 days old)): 6 orders
+  Days Old = 20 (Urgent (20 days old)): 9 orders
+  Days Old = 21 (Urgent (21 days old)): 42 orders
+  Days Old = 22 (Urgent (22 days old)): 10 orders
+  Days Old = 23 (Urgent (23 days old)): 8 orders
+  Days Old = 24 (Urgent (24 days old)): 9 orders
+  Days Old = 25 (Urgent (25 days old)): 11 orders
+  Days Old = 26 (Urgent (26 days old)): 6 orders
+  Days Old = 27 (Urgent (27 days old)): 25 orders
+  Days Old = 28 (Urgent (28 days old)): 18 orders
+  Days Old = 30 (Urgent (30 days old)): 7 orders
+
+=== NON-URGENT ORDERS DETAILS ===
+  Handle: PURP001, Date: 21/09/2026 09:34:28, Category: Pickup
+  Handle: PNPP001, Date: 21/09/2026 07:46:59, Category: Transit
+  Handle: PREP001, Date: 21/09/2026 08:15:58, Category: Transit
+  Handle: ROTP001, Date: 21/09/2026 08:18:08, Category: Transit
+  Handle: ROTP001, Date: 21/09/2026 08:18:35, Category: Transit
+  Handle: TAKP001, Date: 21/09/2026 08:36:16, Category: Transit
+  Handle: THOP001, Date: 21/09/2026 08:38:58, Category: Transit
+  Handle: THOP001, Date: 21/09/2026 08:41:31, Category: Transit
+  Handle: PURP001, Date: 21/09/2026 08:50:56, Category: Transit
+  Handle: KAMP001, Date: 21/09/2026 08:51:34, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:53:22, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:54:13, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:54:39, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:55:47, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:56:06, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:56:24, Category: Transit
+  Handle: ODDP001, Date: 21/09/2026 08:56:40, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:56:41, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:56:56, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:57:11, Category: Transit
+  Handle: BATP001, Date: 21/09/2026 08:57:35, Category: Transit
+  Handle: PNPP011, Date: 21/09/2026 08:58:36, Category: Transit
+  Handle: PNPP014, Date: 21/09/2026 09:11:44, Category: Transit
+  Handle: PNPP011, Date: 21/09/2026 09:18:31, Category: Transit
+  Handle: KAMP001, Date: 21/09/2026 09:19:45, Category: Transit
+  Handle: PREP001, Date: 21/09/2026 09:20:49, Category: Transit
+  Handle: ROTP001, Date: 21/09/2026 09:29:28, Category: Transit
+  Handle: KRAP001, Date: 21/09/2026 09:31:30, Category: Transit
+  Handle: PNPP010, Date: 21/09/2026 09:33:05, Category: Transit
+  Handle: PURP001, Date: 21/09/2026 09:34:28, Category: Transit
+  Handle: PURP001, Date: 21/09/2026 09:34:28, Category: Transit
+  Handle: PURP001, Date: 21/09/2026 09:34:28, Category: Transit
+  Handle: PURP001, Date: 21/09/2026 09:34:28, Category: Transit
+  Handle: THOP001, Date: 21/09/2026 09:34:45, Category: Transit
+  Handle: THOP001, Date: 21/09/2026 09:37:27, Category: Transit
+  Handle: TBKP001, Date: 21/09/2026 08:19:34, Category: Branch

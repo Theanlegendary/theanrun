@@ -202,6 +202,13 @@ def process_pending_data(src_path_or_df):
     is_hub = df_p['CURRENT POST OFFICE'].astype(str).str.contains('MEGA|HUB|DVC', case=False, na=False)
     df_branch = df_p[~is_hub].copy()
 
+    # ── PURGE DELIVERED / SHIPPED BILLS (LIVE TRACKING CROSS-CHECK) ───────────
+    try:
+        from shipped_filter import filter_shipped_bills_from_df
+        df_branch, removed_shipped = filter_shipped_bills_from_df(df_branch, verify_live=True)
+    except Exception as e_shipped:
+        print(f"[TOTAL_PENDING] Warning: Live shipped verification error: {e_shipped}")
+
     df_branch['Branch'] = df_branch['CURRENT POST OFFICE'].apply(get_branch_code)
     df_branch['Facility_Type'] = df_branch['CURRENT POST OFFICE'].apply(get_facility_type)
 
@@ -564,19 +571,38 @@ def render_total_pending_image(summary_df, grand_total, out_png_path=None, df_de
 
 
 def format_pending_text_summary(summary_df, grand_total, target_date=None):
-    """Formats markdown caption for scheduled or interactive Total Pending reports."""
+    """Formats markdown caption for scheduled or interactive Total Pending reports matching official detail view."""
     if target_date is None:
         target_date = datetime.now()
     stamp_str = target_date.strftime("%d/%m/%Y %H:%M")
-    total_delayed = 0
-    if DELAY_COL_NAME in summary_df.columns:
-        total_delayed = int(summary_df[DELAY_COL_NAME].sum())
+
+    total_val = grand_total.get("Total", 0) if isinstance(grand_total, dict) else (grand_total or 0)
+    sp_val = grand_total.get("Servicepoint", 0) if isinstance(grand_total, dict) else 0
+    sr_val = grand_total.get("Showroom", 0) if isinstance(grand_total, dict) else 0
+    ag_val = grand_total.get("Agent", 0) if isinstance(grand_total, dict) else 0
+    delay_val = grand_total.get(DELAY_COL_NAME, grand_total.get("Total >= 3 Days", 0)) if isinstance(grand_total, dict) else 0
+
+    if delay_val == 0 and summary_df is not None and not summary_df.empty:
+        if DELAY_COL_NAME in summary_df.columns:
+            delay_val = int(summary_df[DELAY_COL_NAME].sum())
+
     lines = [
-        f"📋 *TOTAL PENDING REPORT* — {stamp_str}",
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        f"📦 *Total Pending Orders:* `{grand_total:,}`",
-        f"⚠️ *Delayed (≥ 3 Days):* `{total_delayed:,}`",
-        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"TOTAL PENDING REPORT — {stamp_str}",
+        f"",
+        f"Total Pending: {total_val:,}",
+        f"Servicepoint: {sp_val:,} | Showroom: {sr_val:,} | Agent: {ag_val:,}",
+        f"Total Delay (>= 3 Days): {delay_val:,}",
     ]
+
+    if summary_df is not None and not summary_df.empty and 'Branch' in summary_df.columns and 'Total' in summary_df.columns:
+        lines.append("")
+        lines.append("Top 10 Pending Branches:")
+        top10 = summary_df.sort_values(by='Total', ascending=False).head(10)
+        for idx, (_, row) in enumerate(top10.iterrows(), 1):
+            b_code = str(row['Branch'])
+            b_tot = int(row['Total'])
+            b_delay = int(row.get(DELAY_COL_NAME, row.get('Total >= 3 Days', 0)))
+            lines.append(f"{idx}. {b_code}: {b_tot:,} (>=3D: {b_delay:,})")
+
     return "\n".join(lines)
 
