@@ -1106,21 +1106,21 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def run_pending_auto_scheduler(app: Application):
-    """Background task loop that sends /total pending report every 2h to registered target groups."""
+    """Background task loop that sends /total pending report at scheduled hours to registered target groups."""
     log.info("Starting background auto-scheduler...")
     SCHEDULED_TARGETS = [
         {
             "chat_id": -1003964504795,
-            "title": "[🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT",
-            "hours": {"08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"}
+            "title": "🔴 GẤP- ĐIỀU HÀNH TỒN PHÁT",
+            "hours": ["08:00", "14:00", "16:00"]
         },
         {
             "chat_id": -5481716194,
-            "title": "[🔴 QUALITY] - METFONE EXPRESS",
-            "hours": {"08:00", "14:00", "16:00", "18:00", "20:00"}
+            "title": "🔴 QUALITY - METFONE EXPRESS",
+            "hours": ["08:00", "14:00", "16:00"]
         }
     ]
-    ALL_SCHEDULED_HOURS = set().union(*(t["hours"] for t in SCHEDULED_TARGETS))
+    ALL_SCHEDULED_HOURS = sorted(list(set().union(*(t["hours"] for t in SCHEDULED_TARGETS))))
     state_file = os.path.join(HERE, "pending_schedule_state.json")
 
     def _load_state():
@@ -1139,43 +1139,57 @@ async def run_pending_auto_scheduler(app: Application):
         except Exception:
             pass
 
+    # Wait 2 seconds on startup before first check
+    await asyncio.sleep(2)
+
     while True:
         try:
-            await asyncio.sleep(20)
             cfg = load_config()
             if is_paused(cfg):
+                await asyncio.sleep(15)
                 continue
 
             now = datetime.now()
             date_str = now.strftime("%Y-%m-%d")
-            
-            current_slot = None
-            slot_time = None
+
+            # Determine all slots whose scheduled time has arrived today
+            past_slots = []
             for slot in ALL_SCHEDULED_HOURS:
                 sh, sm = map(int, slot.split(":"))
-                if now.hour == sh and 0 <= now.minute <= 5:
-                    current_slot = f"{date_str}_{slot.replace(':', '')}"
-                    slot_time = slot
-                    break
+                slot_time_today = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+                if now >= slot_time_today:
+                    past_slots.append(slot)
 
-            if not current_slot:
+            if not past_slots:
+                # No scheduled slot reached yet today (e.g. before 08:00)
+                await asyncio.sleep(15)
                 continue
+
+            # The latest scheduled slot that has been reached today (e.g. 08:00 if between 08:00 and 14:00)
+            slot_time = past_slots[-1]
+            current_slot = f"{date_str}_{slot_time.replace(':', '')}"
 
             state = _load_state()
-            if state.get("last_run_slot") == current_slot:
+            completed_slots = set(state.get("completed_slots", []))
+            if state.get("last_run_slot") == current_slot or current_slot in completed_slots:
+                await asyncio.sleep(15)
                 continue
+
+            # Cooldown if this slot failed very recently (avoid tight error loop)
+            if state.get("failed_slot") == current_slot:
+                last_fail = state.get("last_fail_ts", 0)
+                if (now.timestamp() - last_fail) < 120:
+                    await asyncio.sleep(15)
+                    continue
 
             active_targets = [t for t in SCHEDULED_TARGETS if slot_time in t["hours"]]
             if not active_targets:
+                await asyncio.sleep(15)
                 continue
 
-            # Immediately claim slot to prevent concurrent or duplicate execution
-            state["last_run_slot"] = current_slot
-            state["last_trigger_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
-            _save_state(state)
-
-            target_names = ", ".join(f"{t['title']} ({t['chat_id']})" for t in active_targets)
-            log.info("Triggering scheduled TOTAL PENDING report for target group(s) [%s], slot %s...", target_names, current_slot)
+            safe_target_names = ", ".join(f"{str(t['title']).encode('ascii', 'replace').decode('ascii')} ({t['chat_id']})" for t in active_targets)
+            log.info("Triggering scheduled TOTAL PENDING report for [%s], slot %s (current time: %s)...",
+                     safe_target_names, current_slot, now.strftime('%H:%M:%S'))
             tmpdir = _make_run_cache("auto_pending_run")
             stamp = now.strftime("%d.%m_%HH%M")
             src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
@@ -1191,10 +1205,11 @@ async def run_pending_auto_scheduler(app: Application):
                 img_buf = await asyncio.to_thread(total_pending_report.render_total_pending_image, summary_df, grand_total, xlsx_path=out_xlsx)
                 img_buf.name = f"TOTAL_PENDING_{stamp}.png"
 
-                sender_bot = get_group_sender_bot()
+                sender_bot = get_group_sender_bot() or app.bot
                 for target in active_targets:
                     t_chat_id = target["chat_id"]
                     t_title = target["title"]
+                    safe_title = str(t_title).encode('ascii', 'replace').decode('ascii')
                     try:
                         if hasattr(img_buf, "seek"):
                             img_buf.seek(0)
@@ -1202,19 +1217,17 @@ async def run_pending_auto_scheduler(app: Application):
                             await sender_bot.send_photo(
                                 chat_id=t_chat_id,
                                 photo=img_buf,
-                                caption=text_caption,
-                                parse_mode="Markdown"
+                                caption=text_caption
                             )
                         except Exception as e_photo:
-                            log.warning("Could not send scheduled photo to %s (%s): %s. Trying document fallback...", t_chat_id, t_title, e_photo)
+                            log.warning("Could not send scheduled photo to %s (%s): %s. Trying document fallback...", t_chat_id, safe_title, e_photo)
                             if hasattr(img_buf, "seek"):
                                 img_buf.seek(0)
                             await sender_bot.send_document(
                                 chat_id=t_chat_id,
                                 document=img_buf,
                                 filename=img_buf.name,
-                                caption=text_caption,
-                                parse_mode="Markdown"
+                                caption=text_caption
                             )
 
                         with open(out_xlsx, "rb") as f:
@@ -1224,20 +1237,30 @@ async def run_pending_auto_scheduler(app: Application):
                                 filename=os.path.basename(out_xlsx),
                                 caption=f"TOTAL PENDING REPORT {now.strftime('%d/%m/%Y %H:%M')}"
                             )
-                        log.info("Successfully delivered scheduled TOTAL PENDING report to %s (%s)", t_chat_id, t_title)
+                        log.info("Successfully delivered scheduled TOTAL PENDING report to %s (%s)", t_chat_id, safe_title)
                     except Exception as e_send:
-                        log.exception("Error sending scheduled report to %s (%s): %s", t_chat_id, t_title, e_send)
+                        log.exception("Error sending scheduled report to %s (%s): %s", t_chat_id, safe_title, e_send)
 
+                state["last_run_slot"] = current_slot
                 state["last_run_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
-                state["total_items"] = grand_total.get("Total", 0)
+                state["total_items"] = grand_total.get("Total", 0) if isinstance(grand_total, dict) else 0
+                state.pop("failed_slot", None)
+                state.pop("last_fail_ts", None)
+                state.pop("last_error", None)
+                completed_slots.add(current_slot)
+                state["completed_slots"] = sorted(list(completed_slots))[-30:]
                 _save_state(state)
             except Exception as e_run:
                 log.exception("Error executing auto-scheduled TOTAL PENDING report: %s", e_run)
+                state["failed_slot"] = current_slot
+                state["last_fail_ts"] = now.timestamp()
                 state["last_error"] = str(e_run)
                 _save_state(state)
 
         except Exception as e_loop:
             log.exception("Error in run_pending_auto_scheduler loop: %s", e_loop)
+
+        await asyncio.sleep(15)
 
 
 async def on_post_init(app: Application):
@@ -1253,7 +1276,7 @@ async def on_post_init(app: Application):
 
 @user_guard
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /schedule [on|off|status] command."""
+    """Handle /schedule [on|off|status|run] command."""
     await delete_group_command(update, context)
     args = context.args or []
     sub = args[0].lower() if args else "status"
@@ -1266,10 +1289,10 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "✅ *Auto-Schedule ENABLED*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "• Target 1: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
-            "  Hours: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 (every 2h)\n"
-            "• Target 2: [🔴 QUALITY] - METFONE EXPRESS (-5481716194)\n"
-            "  Hours: 08:00, 14:00, 16:00, 18:00, 20:00 (10:00 & 12:00 excluded)\n"
+            "• Target 1: 🔴 GẤP- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
+            "  Hours: 08:00, 14:00, 16:00\n"
+            "• Target 2: 🔴 QUALITY - METFONE EXPRESS (-5481716194)\n"
+            "  Hours: 08:00, 14:00, 16:00\n"
             "• Status: Active in background"
         )
     elif sub in ("off", "pause", "stop", "disable"):
@@ -1278,25 +1301,43 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "⏸ *Auto-Schedule PAUSED*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "• Target 1: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
-            "• Target 2: [🔴 QUALITY] - METFONE EXPRESS (-5481716194)\n"
+            "• Target 1: 🔴 GẤP- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
+            "• Target 2: 🔴 QUALITY - METFONE EXPRESS (-5481716194)\n"
             "• Status: Paused\n\n"
             "Use `/schedule on` or `/resume` to re-enable."
         )
+    elif sub in ("run", "now", "force"):
+        # Reset state so scheduler triggers current slot immediately
+        state_file = os.path.join(HERE, "pending_schedule_state.json")
+        try:
+            if os.path.exists(state_file):
+                with open(state_file, "r", encoding="utf-8") as f:
+                    st = json.load(f)
+            else:
+                st = {}
+            st.pop("last_run_slot", None)
+            st.pop("completed_slots", None)
+            st.pop("failed_slot", None)
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump(st, f, indent=2)
+        except Exception:
+            pass
+        msg = "🚀 Triggering scheduled TOTAL PENDING report now..."
     else:
         paused = is_paused(cfg)
         status_str = "⏸ PAUSED" if paused else "✅ ACTIVE"
         msg = (
             f"📅 *Auto-Schedule Status: {status_str}*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "• Target 1: [🔴 GẤP]- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
-            "  Hours: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 (every 2h)\n"
-            "• Target 2: [🔴 QUALITY] - METFONE EXPRESS (-5481716194)\n"
-            "  Hours: 08:00, 14:00, 16:00, 18:00, 20:00 (10:00 & 12:00 excluded)\n"
+            "• Target 1: 🔴 GẤP- ĐIỀU HÀNH TỒN PHÁT (-1003964504795)\n"
+            "  Hours: 08:00, 14:00, 16:00\n"
+            "• Target 2: 🔴 QUALITY - METFONE EXPRESS (-5481716194)\n"
+            "  Hours: 08:00, 14:00, 16:00\n"
             "• Report: /total pending (Summary Photo + Detailed Excel)\n\n"
             "Commands:\n"
             "• `/schedule on` — Enable schedule mode\n"
-            "• `/schedule off` — Pause schedule mode"
+            "• `/schedule off` — Pause schedule mode\n"
+            "• `/schedule run` — Run scheduled report now"
         )
 
     await private_or_current_reply(update, context, msg, parse_mode="Markdown")
