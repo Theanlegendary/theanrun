@@ -1187,15 +1187,17 @@ async def run_pending_auto_scheduler(app: Application):
                 await asyncio.sleep(15)
                 continue
 
-            safe_target_names = ", ".join(f"{str(t['title']).encode('ascii', 'replace').decode('ascii')} ({t['chat_id']})" for t in active_targets)
-            log.info("Triggering scheduled TOTAL PENDING report for [%s], slot %s (current time: %s)...",
-                     safe_target_names, current_slot, now.strftime('%H:%M:%S'))
+            target_names = ", ".join(f"{str(t['title']).encode('ascii', 'replace').decode('ascii')} ({t['chat_id']})" for t in active_targets)
+            log.info("Triggering scheduled reports (/total & /total pending) for [%s], slot %s (current time: %s)...",
+                     target_names, current_slot, now.strftime('%H:%M:%S'))
             tmpdir = _make_run_cache("auto_pending_run")
             stamp = now.strftime("%d.%m_%HH%M")
             src = os.path.join(tmpdir, f"export_{stamp}.xlsx")
 
             try:
                 await asyncio.to_thread(downloader.download_detail, cfg["api"], src, force_refresh=True)
+
+                # ── 1. Generate /total pending (Pending summary image & Excel) ──
                 import total_pending_report
                 summary_df, grand_total, df_detail = await asyncio.to_thread(total_pending_report.process_pending_data, src)
                 out_xlsx = os.path.join(tmpdir, f"TOTAL_PENDING_{stamp}.xlsx")
@@ -1205,11 +1207,195 @@ async def run_pending_auto_scheduler(app: Application):
                 img_buf = await asyncio.to_thread(total_pending_report.render_total_pending_image, summary_df, grand_total, xlsx_path=out_xlsx)
                 img_buf.name = f"TOTAL_PENDING_{stamp}.png"
 
+                # ── 2. Generate /total (Daily Push summary images & Total Excel) ──
+                import generate_summary
+                cache_dir = os.path.join(HERE, "cache")
+                rev_cache = os.path.join(cache_dir, "latest_revenue.xlsx")
+                mode = get_mode(cfg)
+                total_res = await asyncio.to_thread(
+                    generate_report.generate_reports_from_data,
+                    src, REF_PATH, tmpdir, return_metadata=True, mode=mode,
+                    revenue_path=rev_cache if os.path.exists(rev_cache) else None
+                )
+                update_webapp_cache(total_res)
+                save_highlight_history(total_res)
+
+                tot_day_date_counts = {}
+                tot_urgent_counts = {}
+                urgent_by_type = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
+                today_ts = pd.Timestamp.now().normalize()
+                tot_fee_counts = {}
+                tot_cod_counts = {}
+                canonical_rn_map = {
+                    "Pickup": "Pickup",
+                    "Delivery": "Delivery",
+                    "Not Assign": "Branch",
+                    "Branch": "Branch",
+                    "Send Mega": "Transit",
+                    "Transit": "Transit",
+                }
+                processed_dfs = set()
+                for rn, df_z in (total_res.get("type_data") or {}).items():
+                    if df_z is None or df_z.empty or id(df_z) in processed_dfs:
+                        continue
+                    processed_dfs.add(id(df_z))
+                    canon_key = canonical_rn_map.get(rn, rn)
+                    handle_col = "POST OFFICE HANDLE"
+                    if handle_col not in df_z.columns:
+                        continue
+                    df_z = df_z.copy()
+                    df_z["_h_upper"] = df_z[handle_col].fillna("").astype(str).str.strip().str.upper()
+                    df_z = df_z[df_z["_h_upper"] != ""]
+                    df_z = df_z[~df_z["_h_upper"].apply(lambda h: len(h) >= 4 and h[3] in ('A', 'S'))]
+                    if df_z.empty:
+                        continue
+                    date_col_z = total_res.get("date_col") or (
+                        "CREATED DATE" if "CREATED DATE" in df_z.columns else
+                        "CURRENT TIME" if "CURRENT TIME" in df_z.columns else None
+                    )
+                    if date_col_z and date_col_z in df_z.columns:
+                        parsed_z = pd.to_datetime(df_z[date_col_z], dayfirst=True, format="mixed", errors="coerce")
+                        df_z["_zdate"] = parsed_z.dt.date
+                        days_diff = (today_ts - parsed_z.dt.normalize()).dt.days
+                        df_recent = df_z[parsed_z.notna() & (days_diff <= 14)]
+                        if not df_recent.empty:
+                            date_grp = df_recent.groupby(["_h_upper", "_zdate"]).size()
+                            for (h, d_val), cnt in date_grp.items():
+                                if h not in tot_day_date_counts:
+                                    tot_day_date_counts[h] = {}
+                                tot_day_date_counts[h][d_val] = tot_day_date_counts[h].get(d_val, 0) + int(cnt)
+                    if "CREATED DATE" in df_z.columns:
+                        cd_parsed = pd.to_datetime(df_z["CREATED DATE"], dayfirst=True, format="mixed", errors="coerce")
+                        days_old = (today_ts - cd_parsed.dt.normalize()).dt.days
+                        df_ge1 = df_z[days_old >= 1]
+                        if not df_ge1.empty:
+                            urgent_by_type[canon_key] = urgent_by_type.get(canon_key, 0) + len(df_ge1)
+                            ge1_grp = df_ge1.groupby("_h_upper").size()
+                            for h, cnt in ge1_grp.items():
+                                if h not in tot_urgent_counts:
+                                    tot_urgent_counts[h] = {"1day": 0, "3days": 0}
+                                tot_urgent_counts[h]["1day"] += int(cnt)
+                        df_ge3 = df_z[days_old >= 3]
+                        if not df_ge3.empty:
+                            ge3_grp = df_ge3.groupby("_h_upper").size()
+                            for h, cnt in ge3_grp.items():
+                                if h not in tot_urgent_counts:
+                                    tot_urgent_counts[h] = {"1day": 0, "3days": 0}
+                                tot_urgent_counts[h]["3days"] += int(cnt)
+                    fee_col = next((c for c in df_z.columns if 'FEE' in c.upper()), None)
+                    if fee_col:
+                        fee_nums = pd.to_numeric(df_z[fee_col], errors="coerce").fillna(0)
+                        df_fee = df_z[fee_nums > 0].copy()
+                        if not df_fee.empty:
+                            df_fee["_fee_val"] = fee_nums[fee_nums > 0]
+                            fee_grp = df_fee.groupby("_h_upper")["_fee_val"].sum()
+                            for h, f_v in fee_grp.items():
+                                tot_fee_counts[h] = tot_fee_counts.get(h, 0.0) + float(f_v)
+                    cod_col = next((c for c in df_z.columns if 'COD' in c.upper()), None)
+                    if cod_col:
+                        cod_nums = pd.to_numeric(df_z[cod_col], errors="coerce").fillna(0)
+                        df_cod = df_z[cod_nums > 0].copy()
+                        if not df_cod.empty:
+                            df_cod["_cod_val"] = cod_nums[cod_nums > 0]
+                            cod_grp = df_cod.groupby("_h_upper")["_cod_val"].sum()
+                            for h, c_v in cod_grp.items():
+                                tot_cod_counts[h] = tot_cod_counts.get(h, 0.0) + float(c_v)
+
+                tot_overall = total_res["overall_counts"]
+                for k in urgent_by_type:
+                    urgent_by_type[k] = min(urgent_by_type[k], tot_overall.get(k, 0))
+                grand_total_num = sum(tot_overall.values())
+                tot_urgent_sum = sum(urgent_by_type.values())
+
+                total_summary_caption = "\n".join([
+                    f"📋 Daily Report  {now.strftime('%d/%m/%Y %H:%M')}",
+                    f"Pickup: {tot_overall.get('Pickup', 0)} (Urgent: {urgent_by_type.get('Pickup', 0)})  |  "
+                    f"Delivery: {tot_overall.get('Delivery', 0)} (Urgent: {urgent_by_type.get('Delivery', 0)})  |  "
+                    f"Transit: {tot_overall.get('Transit', 0) or tot_overall.get('Send Mega', 0)} (Urgent: {urgent_by_type.get('Transit', 0)})  |  "
+                    f"Branch: {tot_overall.get('Branch', 0) or tot_overall.get('Not Assign', 0)} (Urgent: {urgent_by_type.get('Branch', 0)})",
+                    f"Grand Total: {grand_total_num}  |  Total Urgent: {tot_urgent_sum}",
+                ])
+
+                pnp_handles = [hr for hr in total_res["handle_results"] if hr["handle"].upper().startswith("PNP") or hr["handle"].upper().startswith("KAN")]
+                prov_handles = [hr for hr in total_res["handle_results"] if not (hr["handle"].upper().startswith("PNP") or hr["handle"].upper().startswith("KAN"))]
+
+                pnp_overall = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
+                for hr in pnp_handles:
+                    hc = hr.get("handle_counts", {})
+                    pnp_overall["Pickup"] += hc.get("Pickup", 0)
+                    pnp_overall["Delivery"] += hc.get("Delivery", 0)
+                    pnp_overall["Transit"] += hc.get("Transit", 0) or hc.get("Send Mega", 0)
+                    pnp_overall["Branch"] += hc.get("Branch", 0) or hc.get("Not Assign", 0)
+                pnp_caption = f"📋 PHNOM PENH AREA  {now.strftime('%d/%m/%Y %H:%M')}\nPickup: {pnp_overall['Pickup']}  |  Delivery: {pnp_overall['Delivery']}  |  Transit: {pnp_overall['Transit']}  |  Branch: {pnp_overall['Branch']}\nTotal: {sum(pnp_overall.values())}"
+                img_pnp = generate_summary.build_summary_image(
+                    pnp_handles,
+                    pnp_overall,
+                    zone_label="PHNOM PENH AREA",
+                    day_date_counts=tot_day_date_counts if tot_day_date_counts else None,
+                    urgent_counts=tot_urgent_counts if tot_urgent_counts else None,
+                    fee_counts=tot_fee_counts if tot_fee_counts else None,
+                    cod_counts=tot_cod_counts if tot_cod_counts else None,
+                    vip_counts=total_res.get("vip_counts"),
+                )
+                img_pnp.name = f"summary_pnp_{stamp}.png"
+
+                prov_overall = {"Pickup": 0, "Delivery": 0, "Transit": 0, "Branch": 0}
+                for hr in prov_handles:
+                    hc = hr.get("handle_counts", {})
+                    prov_overall["Pickup"] += hc.get("Pickup", 0)
+                    prov_overall["Delivery"] += hc.get("Delivery", 0)
+                    prov_overall["Transit"] += hc.get("Transit", 0) or hc.get("Send Mega", 0)
+                    prov_overall["Branch"] += hc.get("Branch", 0) or hc.get("Not Assign", 0)
+                prov_caption = f"📋 PROVINCIAL BRANCHES  {now.strftime('%d/%m/%Y %H:%M')}\nPickup: {prov_overall['Pickup']}  |  Delivery: {prov_overall['Delivery']}  |  Transit: {prov_overall['Transit']}  |  Branch: {prov_overall['Branch']}\nTotal: {sum(prov_overall.values())}"
+                img_prov = generate_summary.build_summary_image(
+                    prov_handles,
+                    prov_overall,
+                    zone_label="PROVINCIAL BRANCHES",
+                    day_date_counts=tot_day_date_counts if tot_day_date_counts else None,
+                    urgent_counts=tot_urgent_counts if tot_urgent_counts else None,
+                    fee_counts=tot_fee_counts if tot_fee_counts else None,
+                    cod_counts=tot_cod_counts if tot_cod_counts else None,
+                    vip_counts=total_res.get("vip_counts"),
+                )
+                img_prov.name = f"summary_prov_{stamp}.png"
+
+                total_xlsx = os.path.join(tmpdir, f"Total_{stamp}.xlsx")
+                generate_summary.build_total_excel(total_res, total_xlsx)
+
+                # ── 3. Deliver reports to active target groups ──
                 sender_bot = get_group_sender_bot() or app.bot
                 for target in active_targets:
                     t_chat_id = target["chat_id"]
                     t_title = target["title"]
                     safe_title = str(t_title).encode('ascii', 'replace').decode('ascii')
+
+                    # A) Send /total (Daily Summary Images + Excel)
+                    try:
+                        if hasattr(img_pnp, "seek"):
+                            img_pnp.seek(0)
+                        await sender_bot.send_photo(chat_id=t_chat_id, photo=img_pnp, caption=pnp_caption)
+                    except Exception as e_pnp:
+                        log.warning("Could not send scheduled PNP summary photo to %s: %s", safe_title, e_pnp)
+
+                    try:
+                        if hasattr(img_prov, "seek"):
+                            img_prov.seek(0)
+                        await sender_bot.send_photo(chat_id=t_chat_id, photo=img_prov, caption=prov_caption)
+                    except Exception as e_prov:
+                        log.warning("Could not send scheduled Prov summary photo to %s: %s", safe_title, e_prov)
+
+                    try:
+                        with open(total_xlsx, "rb") as f_tot:
+                            await sender_bot.send_document(
+                                chat_id=t_chat_id,
+                                document=f_tot,
+                                filename=os.path.basename(total_xlsx),
+                                caption=total_summary_caption
+                            )
+                    except Exception as e_tot_doc:
+                        log.warning("Could not send scheduled Total Excel to %s: %s", safe_title, e_tot_doc)
+
+                    # B) Send /total pending (Pending Summary Image + Excel)
                     try:
                         if hasattr(img_buf, "seek"):
                             img_buf.seek(0)
@@ -1237,7 +1423,7 @@ async def run_pending_auto_scheduler(app: Application):
                                 filename=os.path.basename(out_xlsx),
                                 caption=f"TOTAL PENDING REPORT {now.strftime('%d/%m/%Y %H:%M')}"
                             )
-                        log.info("Successfully delivered scheduled TOTAL PENDING report to %s (%s)", t_chat_id, safe_title)
+                        log.info("Successfully delivered scheduled reports (/total & /total pending) to %s (%s)", t_chat_id, safe_title)
                     except Exception as e_send:
                         log.exception("Error sending scheduled report to %s (%s): %s", t_chat_id, safe_title, e_send)
 
@@ -1251,7 +1437,7 @@ async def run_pending_auto_scheduler(app: Application):
                 state["completed_slots"] = sorted(list(completed_slots))[-30:]
                 _save_state(state)
             except Exception as e_run:
-                log.exception("Error executing auto-scheduled TOTAL PENDING report: %s", e_run)
+                log.exception("Error executing auto-scheduled reports: %s", e_run)
                 state["failed_slot"] = current_slot
                 state["last_fail_ts"] = now.timestamp()
                 state["last_error"] = str(e_run)
@@ -1293,6 +1479,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  Hours: 08:00, 14:00, 16:00\n"
             "• Target 2: 🔴 QUALITY - METFONE EXPRESS (-5481716194)\n"
             "  Hours: 08:00, 14:00, 16:00\n"
+            "• Reports: /total pending & /total (Summary Photos + Detailed Excels)\n"
             "• Status: Active in background"
         )
     elif sub in ("off", "pause", "stop", "disable"):
@@ -1322,7 +1509,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 json.dump(st, f, indent=2)
         except Exception:
             pass
-        msg = "🚀 Triggering scheduled TOTAL PENDING report now..."
+        msg = "🚀 Triggering scheduled reports (/total & /total pending) now..."
     else:
         paused = is_paused(cfg)
         status_str = "⏸ PAUSED" if paused else "✅ ACTIVE"
@@ -1333,7 +1520,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  Hours: 08:00, 14:00, 16:00\n"
             "• Target 2: 🔴 QUALITY - METFONE EXPRESS (-5481716194)\n"
             "  Hours: 08:00, 14:00, 16:00\n"
-            "• Report: /total pending (Summary Photo + Detailed Excel)\n\n"
+            "• Reports: /total pending & /total (Summary Photos + Detailed Excels)\n\n"
             "Commands:\n"
             "• `/schedule on` — Enable schedule mode\n"
             "• `/schedule off` — Pause schedule mode\n"
