@@ -516,8 +516,13 @@ def build_summary_image(
                  str(g_transit)  if g_transit  else "",
                  str(g_branch)   if g_branch   else ""]
 
+    shown_handles = {hr["handle"].upper() for hr in handle_results}
+
     if vip_counts is not None:
-        g_vip = sum((vip_counts or {}).values())
+        g_vip = sum(
+            (vip_counts or {}).get(hr["handle"], 0) or (vip_counts or {}).get(hr["handle"].upper(), 0)
+            for hr in handle_results
+        )
         gt_cells.append(str(g_vip) if g_vip else "")
 
     # Date totals
@@ -530,43 +535,41 @@ def build_summary_image(
 
     gt_cells.append(str(g_total) if g_total else "")
 
-    # Grand total Fee / COD
+    # Grand total Fee / COD (sum ONLY handles shown in the current table)
     if has_fee_cod:
         if fee_counts is not None:
-            g_fee = sum((fee_counts or {}).values())
+            g_fee = sum(
+                (fee_counts or {}).get(hr["handle"], 0.0) or (fee_counts or {}).get(hr["handle"].upper(), 0.0)
+                for hr in handle_results
+            )
             gt_cells.append(f"${g_fee:.2f}" if g_fee else "")
         if cod_counts is not None:
-            g_cod = sum((cod_counts or {}).values())
+            g_cod = sum(
+                (cod_counts or {}).get(hr["handle"], 0.0) or (cod_counts or {}).get(hr["handle"].upper(), 0.0)
+                for hr in handle_results
+            )
             gt_cells.append(f"${g_cod:.2f}" if g_cod else "")
 
-    # Add > 1 Day and > 3 Days to Grand Total
-    # ONLY sum handles that are actually shown in this image (not all branches)
-    shown_handles = {hr["handle"].upper() for hr in handle_results}
+    # Add > 1 Day and > 3 Days to Grand Total (sum ONLY handles shown in the current table)
     if urgent_counts is not None:
         g_1day = 0
         g_3days = 0
-        for h_key, h_urgent in urgent_counts.items():
-            if h_key.upper() not in shown_handles:
-                continue  # skip handles not in this image (e.g. provincial when showing PNP)
+        for hr in handle_results:
+            h_key = hr["handle"]
+            h_urgent = (urgent_counts or {}).get(h_key, {})
+            if not h_urgent:
+                h_urgent = (urgent_counts or {}).get(h_key.upper(), {})
             if isinstance(h_urgent, dict):
                 g_1day += h_urgent.get("1day", 0)
                 g_3days += h_urgent.get("3days", 0)
             else:
-                g_1day += h_urgent
+                g_1day += (h_urgent or 0)
 
         gt_cells.append(str(g_1day) if g_1day else "")
         gt_cells.append(str(g_3days) if g_3days else "")
 
     gt_bgs = [C_TOTAL_BG] * n_cols
     if urgent_counts is not None:
-        g_1day = sum(
-            (v.get("1day", 0) if isinstance(v, dict) else v)
-            for k, v in urgent_counts.items() if k.upper() in shown_handles
-        )
-        g_3days = sum(
-            (v.get("3days", 0) if isinstance(v, dict) else 0)
-            for k, v in urgent_counts.items() if k.upper() in shown_handles
-        )
         if g_1day > 0 or g_3days > 0:
             gt_bgs[-2:] = [(255, 200, 200), (255, 200, 200)]  # Last 2 cells
 

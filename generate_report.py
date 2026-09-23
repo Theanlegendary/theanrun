@@ -133,7 +133,7 @@ REPORT_COLS = {
 REPORT_FILTER_COLS = {
     'Pickup':   'POST OFFICE HANDLE',
     'Delivery': 'POST OFFICE HANDLE',
-    'Transit':  'CURRENT POST OFFICE',
+    'Transit':  'POST OFFICE HANDLE',
     'Branch':   'POST OFFICE HANDLE',
 }
 
@@ -390,7 +390,7 @@ def map_to_post_office(current_office, zone_mapping):
 
 def load_reference(ref_path):
     if ref_path.lower().endswith('.csv'):
-        df = pd.read_csv(ref_path, dtype=str, keep_default_na=False)
+        df = pd.read_csv(ref_path, dtype=str, keep_default_na=False, encoding='utf-8-sig')
     else:
         df = pd.read_excel(ref_path, dtype=str)
     df.columns = [str(c).strip().lower() for c in df.columns]
