@@ -2610,12 +2610,26 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     b_bills, b_weight = await asyncio.to_thread(shipments_tomorrow.build_shipments_tomorrow_report, src, br_xlsx, target_label=br_code)
                     if b_bills > 0:
                         b_caption = f"🚚 *SHIPMENTS INCOMING REPORT ({br_code})*\n📦 Total Bills: `{b_bills}`\n⚖️ Total Weight: `{b_weight/1000:,.2f} kg`"
+                        b_img_buf = None
                         try:
-                            b_img = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, br_xlsx)
-                            b_img.name = f"EXECUTIVE_SUMMARY_{br_code}.png"
-                            await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=b_img)
+                            b_img_buf = await asyncio.to_thread(shipments_tomorrow.render_executive_summary_image, br_xlsx)
+                            b_img_buf.name = f"EXECUTIVE_SUMMARY_{br_code}.png"
+                            # Send to requester too
+                            await send_requester_photo(update, context, b_img_buf)
                         except Exception as e_bp:
-                            log.warning("Failed sending branch photo to group %s: %s", gid, e_bp)
+                            log.warning("Failed rendering branch photo for %s: %s", br_code, e_bp)
+
+                        # Send to requester
+                        with open(br_xlsx, "rb") as f_req:
+                            await send_requester_document(update, context, f_req, os.path.basename(br_xlsx), caption=b_caption)
+
+                        # Forward to group
+                        try:
+                            if b_img_buf:
+                                b_img_buf.seek(0)
+                                await safe_api_call(sender_bot.send_photo, chat_id=int(gid), photo=b_img_buf)
+                        except Exception as e_bp2:
+                            log.warning("Failed sending branch photo to group %s: %s", gid, e_bp2)
 
                         with open(br_xlsx, "rb") as f_doc:
                             await safe_api_call(
@@ -2629,7 +2643,7 @@ async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e_br:
                     log.warning("Failed building/forwarding tomorrow report for branch %s: %s", br_code, e_br)
 
-            await edit_or_send_requester_text(msg, update, context, f"✅ Done! Forwarded SHIPMENTS INCOMING REPORTS to {total_sent_branches} Provincial Branch Groups.")
+            await edit_or_send_requester_text(msg, update, context, f"Done! Sent SHIPMENTS INCOMING REPORTS for {total_sent_branches} Provincial Branches.")
             return
 
         # Single target forwarding (Zone or Branch)
